@@ -14,3 +14,6 @@ This is a signing-key recovery release and includes the radar sweep masking chan
 After manually installing v1.6.1, later releases can again be delivered through
 the signed automatic-update feed using the replacement private key retained by
 the project owner.
+
+The repository build workflow produces the unsigned USB UF2 reproducibly; release
+manifests are signed offline so the private signing key never enters GitHub.
