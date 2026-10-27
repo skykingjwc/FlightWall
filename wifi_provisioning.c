@@ -91,6 +91,9 @@ static const char *clear_cgi_handler(int iIndex, int iNumParams, char *pcParam[]
 static const char *test_emergency_cgi_handler(int iIndex, int iNumParams, char *pcParam[], char *pcValue[]);
 static const char *test_load_cgi_handler(int iIndex, int iNumParams, char *pcParam[], char *pcValue[]);
 static const char *cancel_test_cgi_handler(int iIndex, int iNumParams, char *pcParam[], char *pcValue[]);
+static const char *check_update_cgi_handler(int iIndex, int iNumParams, char *pcParam[], char *pcValue[]);
+static const char *install_update_cgi_handler(int iIndex, int iNumParams, char *pcParam[], char *pcValue[]);
+static const char *update_auto_cgi_handler(int iIndex, int iNumParams, char *pcParam[], char *pcValue[]);
 
 static u16_t ssi_handler(int iIndex, char *pcInsert, int iInsertLen
 #if LWIP_HTTPD_SSI_MULTIPART
@@ -104,7 +107,10 @@ static tCGI cgi_handlers[] = {
     { "/clear.cgi", clear_cgi_handler},
     { "/test_emergency.cgi", test_emergency_cgi_handler},
     { "/test_load.cgi", test_load_cgi_handler},
-    { "/cancel_test.cgi", cancel_test_cgi_handler}
+    { "/cancel_test.cgi", cancel_test_cgi_handler},
+    { "/check_update.cgi", check_update_cgi_handler},
+    { "/install_update.cgi", install_update_cgi_handler},
+    { "/update_auto.cgi", update_auto_cgi_handler}
 };
 
 // Be aware of LWIP_HTTPD_MAX_TAG_NAME_LEN
@@ -123,7 +129,8 @@ static const char *ssi_tags[] = {
     "refresh",
     "timing",
     "watch",
-    "update"
+    "update",
+    "autoupdate"
 };
 
 static void start_http_server(void) {
