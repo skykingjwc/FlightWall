@@ -91,7 +91,7 @@ add_executable(hub75_demo
 )
 
 pico_set_program_name(hub75_demo "hub75_demo")
-pico_set_program_version(hub75_demo "1.6.1")
+pico_set_program_version(hub75_demo "1.6.2")
 
 pico_set_float_implementation(hub75_demo pico)
 
@@ -102,12 +102,19 @@ pico_enable_stdio_usb(hub75_demo 1)
 add_subdirectory(common)
 add_subdirectory(libraries)
 
+set(FLIGHTWALL_TBYB ON CACHE BOOL "Build FlightWall as a try-before-you-buy OTA image")
+if(FLIGHTWALL_TBYB)
+    set(FLIGHTWALL_TBYB_VALUE 1)
+else()
+    set(FLIGHTWALL_TBYB_VALUE 0)
+endif()
+
 target_compile_definitions(hub75_demo PRIVATE
-        PICO_CRT0_IMAGE_TYPE_TBYB=1
+        PICO_CRT0_IMAGE_TYPE_TBYB=${FLIGHTWALL_TBYB_VALUE}
         PICO_FLASH_BANK_STORAGE_OFFSET=0x3EB000
         CYW43_HOST_NAME="flightwall"
-        FLIGHTWALL_VERSION="1.6.1"
-        FLIGHTWALL_BUILD_NUMBER=10601
+        FLIGHTWALL_VERSION="1.6.2"
+        FLIGHTWALL_BUILD_NUMBER=10602
 )
 
 target_link_libraries(hub75_demo PRIVATE
