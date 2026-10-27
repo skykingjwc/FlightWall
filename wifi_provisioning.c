@@ -938,6 +938,11 @@ static u16_t ssi_handler(int iIndex, char *pcInsert, int iInsertLen
             printed = snprintf(pcInsert, iInsertLen, "%s", flightwall_update_status());
             break;
         }
+        case 15: { // automatic-install checkbox state
+            printed = snprintf(pcInsert, iInsertLen, "%s",
+                               flightwall_settings_get()->auto_install_updates ? "checked" : "");
+            break;
+        }
         default: { // unknown tag
             printed = 0;
             break;
