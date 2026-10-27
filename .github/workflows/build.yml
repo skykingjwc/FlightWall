@@ -18,9 +18,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install ARM toolchain
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi libnewlib-arm-none-eabi
+        uses: carlosperate/arm-none-eabi-gcc-action@v1
+        with:
+          release: '15.2.Rel1'
 
       - name: Check out Pico SDK 2.3.0
         uses: actions/checkout@v4
