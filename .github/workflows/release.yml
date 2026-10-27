@@ -1,0 +1,80 @@
+name: Release FlightWall
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Validate release version
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          grep -q "FLIGHTWALL_VERSION=\"${VERSION}\"" CMakeLists.txt
+          test -f "RELEASE-${GITHUB_REF_NAME}.md"
+
+      - name: Install ARM toolchain
+        uses: carlosperate/arm-none-eabi-gcc-action@v1
+        with:
+          release: '15.2.Rel1'
+
+      - name: Check out Pico SDK 2.3.0
+        uses: actions/checkout@v4
+        with:
+          repository: raspberrypi/pico-sdk
+          ref: 2.3.0
+          submodules: recursive
+          path: pico-sdk
+
+      - name: Configure USB build
+        run: |
+          cmake -S . -B build-usb -G Ninja \
+            -DPICO_SDK_PATH="$GITHUB_WORKSPACE/pico-sdk" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFLIGHTWALL_TBYB=OFF
+
+      - name: Build USB installer
+        run: cmake --build build-usb --target hub75_demo
+
+      - name: Configure OTA build
+        run: |
+          cmake -S . -B build-ota -G Ninja \
+            -DPICO_SDK_PATH="$GITHUB_WORKSPACE/pico-sdk" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFLIGHTWALL_TBYB=ON
+
+      - name: Build OTA image
+        run: cmake --build build-ota --target hub75_demo
+
+      - name: Name release files
+        shell: bash
+        run: |
+          cp build-usb/hub75_demo.uf2 "FlightWall-${GITHUB_REF_NAME}.uf2"
+          cp build-ota/hub75_demo.uf2 "FlightWall-${GITHUB_REF_NAME}-OTA-full.uf2"
+
+      - name: Preserve OTA image for offline signing
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlightWall-${{ github.ref_name }}-OTA-for-signing
+          path: FlightWall-${{ github.ref_name }}-OTA-full.uf2
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "FlightWall-${GITHUB_REF_NAME}.uf2" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "FlightWall $GITHUB_REF_NAME" \
+            --notes-file "RELEASE-${GITHUB_REF_NAME}.md" \
+            --verify-tag
