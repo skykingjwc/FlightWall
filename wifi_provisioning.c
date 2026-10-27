@@ -783,6 +783,29 @@ static const char *cancel_test_cgi_handler(__unused int iIndex, __unused int iNu
     return "/index.shtml";
 }
 
+static const char *check_update_cgi_handler(__unused int iIndex, __unused int iNumParams,
+                                            __unused char *pcParam[], __unused char *pcValue[]) {
+    flightwall_update_request_check();
+    printf("manual update check requested\n");
+    return "/index.shtml";
+}
+
+static const char *install_update_cgi_handler(__unused int iIndex, __unused int iNumParams,
+                                              __unused char *pcParam[], __unused char *pcValue[]) {
+    flightwall_update_request_install();
+    printf("manual update install requested\n");
+    return "/index.shtml";
+}
+
+static const char *update_auto_cgi_handler(__unused int iIndex, int iNumParams,
+                                           char *pcParam[], char *pcValue[]) {
+    const char *enabled = cgi_param("enabled", iNumParams, pcParam, pcValue);
+    const bool auto_install = enabled && strcmp(enabled, "1") == 0;
+    if (!flightwall_settings_set_auto_install_updates(auto_install))
+        printf("failed to save automatic-update preference\n");
+    return "/index.shtml";
+}
+
 bool flightwall_emergency_test_active(void) {
     return emergency_test_active;
 }
