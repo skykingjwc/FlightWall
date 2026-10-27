@@ -229,6 +229,31 @@ void flightwall_settings_load(void) {
     bool valid = false;
 
     if (rc == BOOTROM_OK) {
+        const stored_settings_v5_t *v5 = (const stored_settings_v5_t *)sector;
+        if (v5->magic == SETTINGS_MAGIC && v5->version == SETTINGS_VERSION &&
+            v5->size == sizeof(*v5) && v5->watched_count <= FLIGHTWALL_MAX_WATCHED &&
+            v5->auto_install_updates <= 1 &&
+            v5->checksum == fnv1a(v5, offsetof(stored_settings_v5_t, checksum)) &&
+            values_valid(v5->latitude, v5->longitude, v5->radius_nm,
+                         v5->brightness_percent, v5->refresh_seconds) &&
+            panel_output_valid(v5->panel_output_basis) &&
+            display_seconds_valid(v5->display_seconds)) {
+            current_settings.latitude = v5->latitude;
+            current_settings.longitude = v5->longitude;
+            current_settings.radius_nm = v5->radius_nm;
+            current_settings.brightness_percent = v5->brightness_percent;
+            current_settings.panel_output_basis = v5->panel_output_basis;
+            current_settings.refresh_seconds = v5->refresh_seconds;
+            current_settings.display_seconds = v5->display_seconds;
+            current_settings.auto_install_updates = v5->auto_install_updates != 0;
+            current_settings.watched_count = v5->watched_count;
+            memcpy(current_settings.watched, v5->watched, sizeof(v5->watched));
+            for (uint8_t i = 0; i < current_settings.watched_count; ++i)
+                current_settings.watched[i][FLIGHTWALL_WATCH_ID_SIZE - 1] = 0;
+            valid = true;
+            printf("loaded FlightWall settings v5\n");
+        }
+
         const stored_settings_v1_t *v1 = (const stored_settings_v1_t *)sector;
         if (v1->magic == SETTINGS_MAGIC && v1->version == 1 &&
             v1->size == sizeof(*v1) &&
@@ -341,6 +366,16 @@ bool flightwall_settings_update(float latitude, float longitude,
     updated.display_seconds = (uint8_t)display_seconds;
     if (!parse_watchlist(watchlist, &updated) || !persist_settings(&updated)) return false;
 
+    current_settings = updated;
+    settings_generation++;
+    return true;
+}
+
+bool flightwall_settings_set_auto_install_updates(bool enabled) {
+    if (current_settings.auto_install_updates == enabled) return true;
+    flightwall_settings_t updated = current_settings;
+    updated.auto_install_updates = enabled;
+    if (!persist_settings(&updated)) return false;
     current_settings = updated;
     settings_generation++;
     return true;
