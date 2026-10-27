@@ -10,6 +10,10 @@ on:
       - 'update/manifest.sig'
   workflow_dispatch:
 
+concurrency:
+  group: flightwall-main-build
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-24.04
