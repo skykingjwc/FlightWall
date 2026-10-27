@@ -30,18 +30,36 @@ jobs:
           submodules: recursive
           path: pico-sdk
 
-      - name: Configure
+      - name: Configure OTA build
         run: |
-          cmake -S . -B build -G Ninja \
+          cmake -S . -B build-ota -G Ninja \
             -DPICO_SDK_PATH="$GITHUB_WORKSPACE/pico-sdk" \
-            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFLIGHTWALL_TBYB=ON
 
-      - name: Build
-        run: cmake --build build --target hub75_demo
+      - name: Build OTA image
+        run: cmake --build build-ota --target hub75_demo
 
-      - name: Upload UF2 artifact
+      - name: Configure USB recovery build
+        run: |
+          cmake -S . -B build-usb -G Ninja \
+            -DPICO_SDK_PATH="$GITHUB_WORKSPACE/pico-sdk" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFLIGHTWALL_TBYB=OFF
+
+      - name: Build USB recovery image
+        run: cmake --build build-usb --target hub75_demo
+
+      - name: Upload OTA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FlightWall-UF2
-          path: build/hub75_demo.uf2
+          name: FlightWall-OTA-UF2
+          path: build-ota/hub75_demo.uf2
+          if-no-files-found: error
+
+      - name: Upload USB recovery artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlightWall-USB-UF2
+          path: build-usb/hub75_demo.uf2
           if-no-files-found: error
