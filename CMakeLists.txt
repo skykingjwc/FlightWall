@@ -91,7 +91,7 @@ add_executable(hub75_demo
 )
 
 pico_set_program_name(hub75_demo "hub75_demo")
-pico_set_program_version(hub75_demo "1.6.4")
+pico_set_program_version(hub75_demo "1.6.5")
 
 pico_set_float_implementation(hub75_demo pico)
 
@@ -113,8 +113,8 @@ target_compile_definitions(hub75_demo PRIVATE
         PICO_CRT0_IMAGE_TYPE_TBYB=${FLIGHTWALL_TBYB_VALUE}
         PICO_FLASH_BANK_STORAGE_OFFSET=0x3EB000
         CYW43_HOST_NAME="flightwall"
-        FLIGHTWALL_VERSION="1.6.4"
-        FLIGHTWALL_BUILD_NUMBER=10604
+        FLIGHTWALL_VERSION="1.6.5"
+        FLIGHTWALL_BUILD_NUMBER=10605
 )
 
 target_link_libraries(hub75_demo PRIVATE
