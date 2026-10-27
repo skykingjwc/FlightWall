@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+  body { background:#10131a; color:#e8edf5; font-family:system-ui,sans-serif; margin:0; }
+  main { max-width:720px; margin:auto; padding:1.2em; }
+  h1 {color:#ffb000; margin-bottom:.2em;}
+  h2 {color:#70d7ff; margin-top:0;}
+  p {color:#d7deea;}
+  .card {background:#1b202b; border:1px solid #343d4e; border-radius:10px; padding:1em; margin:1em 0;}
+  .status {display:grid; grid-template-columns:8em 1fr; gap:.4em;}
+  .label {color:#9aa8bc;}
+  .n {display:flex; align-items:center; justify-content:space-between; gap:1em; max-width:28em; padding:.45em 0; border-bottom:1px solid #343d4e;}
+  .delete-link {color:#9aa8bc; text-decoration:underline; padding:.25em;}
+  .delete-link:hover {color:#e8edf5;}
+  .danger {background:#7d1720; color:white; border:1px solid #bd3440; border-radius:4px;}
+  form {
+    margin-bottom: 1.5em;
+  }
+input[type="text"],
+input[type="password"],
+input[type="number"] {
+  font-size: 1em;
+  padding: 0.3em;
+  width:100%;
+  max-width:28em;
+  box-sizing: border-box;
+}
+textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em; box-sizing:border-box;}
+  input[type="submit"] {
+    font-size: 1em;
+    padding: 0.5em 1em;
+  }
+  </style>
+</head>
+<body>
+<main>
+  <h1>ChatGPT FlightWall</h1>
+  <p>Embedded HUB75 aircraft display</p>
+
+  <section class="card">
+    <h2>Status</h2>
+    <div class="status">
+      <span class="label">Firmware</span><span><!--#version--></span>
+      <span class="label">Hostname</span><span><!--#hostname--></span>
+      <span class="label">IP address</span><span><!--#ipaddr--></span>
+      <span class="label">OTA service</span><span>Ready on TCP 4242</span>
+    </div>
+  </section>
+
+  <section class="card">
+  <h2>Wi-Fi</h2>
+  <p>Add a network or update the password for one already saved. Credentials are stored only on this device. While online, changes take effect on the next restart and do not interrupt the current connection.</p>
+
+  <form action="/credentials.cgi" method="post">
+    <label for="ssid">SSID:</label><br>
+    <input type="text" id="ssid" name="ssid" value=""><br>
+    <label for="password">Password:</label><br>
+    <input type="password" id="password" name="password" value=""><br>
+    <input type="submit" value="Save network">
+  </form>
+
+  <p>Select a saved network:</p>
+  <form action="/connect_from_saved.cgi" method="get">
+    <!--#wifilist-->
+    <input type="submit" value="Connect">
+  </form>
+
+  <form action="/clear.cgi" method="get" onsubmit="return confirm('Remove every saved Wi-Fi network?');">
+    <input type="submit" value="Delete all saved networks">
+  </form>
+  </section>
+
+  <section class="card">
+    <h2>Flight display</h2>
+    <form action="/settings.cgi" method="post">
+      <label for="latitude">Latitude (-90 to 90)</label><br>
+      <input id="latitude" name="latitude" type="text" inputmode="decimal" value="<!--#lat-->"><br><br>
+      <label for="longitude">Longitude (-180 to 180)</label><br>
+      <input id="longitude" name="longitude" type="text" inputmode="decimal" value="<!--#lon-->"><br><br>
+      <label for="radius">Search radius (1-250 nautical miles)</label><br>
+      <input id="radius" name="radius" type="number" min="1" max="250" value="<!--#radius-->"><br><br>
+      <label for="brightness">Brightness (1-100%)</label><br>
+      <input id="brightness" name="brightness" type="number" min="1" max="100" value="<!--#bright-->"><br><br>
+      <details>
+        <summary>Advanced panel output</summary>
+        <p><label for="paneloutput">Maximum panel output</label><br>
+        <select id="paneloutput" name="paneloutput"><!--#basis--></select></p>
+        <small>Higher settings increase light output, power use, and panel heat. Start at 8 and increase gradually.</small>
+      </details><br>
+      <label for="refresh">API refresh interval (10-300 seconds)</label><br>
+      <input id="refresh" name="refresh" type="number" min="10" max="300" value="<!--#refresh-->"><br><br>
+      <label for="displaytime">Screen timing (3-30 seconds)</label><br>
+      <input id="displaytime" name="displaytime" type="number" min="3" max="30" value="<!--#timing-->"><br>
+      <small>Controls how long each normal screen and aircraft-list page remains visible.</small><br><br>
+      <label for="watchlist">Watched aircraft (callsign, tail number, or ICAO hex)</label><br>
+      <textarea id="watchlist" name="watchlist" placeholder="N6917D, N52267"><!--#watch--></textarea><br>
+      <small>Separate entries with commas, spaces, or new lines. Watched aircraft are pinned to the top and shown in yellow.</small><br><br>
+      <input type="submit" value="Save and apply settings">
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Display tests</h2>
+    <p>Test the flashing emergency screen without waiting for a real aircraft alert. Red remains reserved for emergency indications.</p>
+    <form action="/test_emergency.cgi" method="get">
+      <input class="danger" type="submit" value="Start emergency test">
+    </form>
+    <p><strong>Full-panel load test:</strong> Solid white energizes every color channel at 100% brightness for 10 seconds using the selected panel-output setting, then automatically returns to normal. Watch the supply current and stop the test if wiring or connectors become warm.</p>
+    <form action="/test_load.cgi" method="get" onsubmit="return confirm('Run the full-panel load test for 10 seconds?');">
+      <input type="submit" value="Run 10-second load test">
+    </form>
+    <form action="/cancel_test.cgi" method="get">
+      <input type="submit" value="Cancel active test">
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Firmware update</h2>
+    <p>Select a FlightWall Stage 3 application UF2. The active firmware remains untouched until the new A/B image is complete.</p>
+    <input id="firmware" type="file" accept=".uf2,application/octet-stream">
+    <p><button id="install" type="button">Install firmware</button></p>
+    <progress id="progress" value="0" max="100" style="width:100%;display:none"></progress>
+    <p id="updateStatus"></p>
+  </section>
+</main>
+<script>
+const button = document.getElementById('install');
+const picker = document.getElementById('firmware');
+const progress = document.getElementById('progress');
+const status = document.getElementById('updateStatus');
+button.addEventListener('click', async () => {
+  const file = picker.files[0];
+  if (!file) { status.textContent = 'Choose a UF2 file first.'; return; }
+  if (!file.name.toLowerCase().endsWith('.uf2') || file.size < 1024 || file.size % 512 !== 0) {
+    status.textContent = 'That does not look like a valid UF2 file.'; return;
+  }
+  button.disabled = true;
+  picker.disabled = true;
+  progress.style.display = 'block';
+  status.textContent = 'Reading firmware...';
+  try {
+    const source = new Uint8Array(await file.arrayBuffer());
+    // Stage 3 UF2s begin with one absolute partition-table block. The OTA
+    // receiver needs only the following application blocks.
+    const app = source.subarray(512);
+    const paddedLength = Math.ceil(app.length / 2048) * 2048;
+    const body = new Uint8Array(paddedLength);
+    body.set(app);
+    const request = new XMLHttpRequest();
+    request.open('POST', '/firmware.cgi');
+    request.setRequestHeader('Content-Type', 'application/octet-stream');
+    request.upload.onprogress = event => {
+      if (event.lengthComputable) progress.value = Math.round(event.loaded * 100 / event.total);
+      status.textContent = `Uploading firmware: ${progress.value}%`;
+    };
+    request.onload = () => {
+      if (request.status >= 200 && request.status < 300 &&
+          request.responseText.includes('Update received')) {
+        progress.value = 100;
+        status.textContent = 'Upload complete. FlightWall is restarting...';
+      } else {
+        status.textContent = 'Firmware was rejected. The existing version is still active.';
+        button.disabled = false; picker.disabled = false;
+      }
+    };
+    request.onerror = () => {
+      status.textContent = 'Connection ended. Check the panel; it may be restarting.';
+      button.disabled = false; picker.disabled = false;
+    };
+    request.send(body);
+  } catch (error) {
+    status.textContent = `Update failed: ${error.message}`;
+    button.disabled = false; picker.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

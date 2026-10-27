@@ -1,0 +1,712 @@
+#include <algorithm>
+#include <climits>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+
+#include "hardware/clocks.h"
+#include "pico/cyw43_arch.h"
+#include "pico/multicore.h"
+#include "pico/stdlib.h"
+
+#include "font8_data.hpp"
+#include "aircraft_data.h"
+#include "flightwall_settings.h"
+#include "hub75.hpp"
+#include "ota_server.h"
+#include "wifi_provisioning.h"
+
+constexpr char APP_NAME[] = "CHATGPT FLIGHTWALL";
+constexpr char APP_VERSION[] = FLIGHTWALL_VERSION;
+
+constexpr Hub75Config panel_cfg{
+    .panel = {
+        .matrix_panel_width = 64,
+        .matrix_panel_height = 32,
+        // Four panels in a 2x2 serpentine chain:
+        // controller -> bottom-right -> bottom-left -> top-left -> top-right.
+        .chain_rows = 2,
+        .chain_cols = 2,
+        .chain_mode = Hub75ChainMode::SERPENTINE,
+        .panel_kind = RowMapping::Standard,
+        .panel_chip = Hub75PanelChip::GENERIC,
+        .inverted_stb = false,
+        .sm_clockdiv_factor = 1.0f,
+        .base_latch_ns = 180,
+        .base_addr_ns = 260,
+    },
+    .screen = {.rotation = Hub75Rotation::DEG_0},
+    .pins = {
+        .data_base_pin = 2,
+        .data_n_pins = 6,
+        .rowsel_base_pin = 8,
+        .rowsel_n_pins = 4,
+        .clk_pin = 13,
+        .strobe_pin = 14,
+        .oen_pin = 15,
+    },
+    .color = {
+        .bitplanes = 8,
+        .separate_cie_channels = false,
+        .balanced_light_output = true,
+        .ccm_rg_shift = 6,
+        .ccm_gb_shift = 7,
+    },
+    .frame_rate_debug = false,
+};
+
+using Panel = Hub75Driver<panel_cfg>;
+static Panel driver;
+
+constexpr int WIDTH = Panel::SCREEN_WIDTH;
+constexpr int HEIGHT = Panel::SCREEN_HEIGHT;
+constexpr int PHYSICAL_PANEL_WIDTH = 64;
+constexpr int PHYSICAL_PANEL_HEIGHT = 32;
+static uint8_t framebuffer[WIDTH * HEIGHT * 3];
+static uint32_t applied_settings_generation;
+static size_t aircraft_page;
+
+struct Color { uint8_t r, g, b; };
+constexpr Color BLACK{0, 0, 0};
+constexpr Color AMBER{255, 175, 0};
+constexpr Color WHITE{255, 255, 255};
+constexpr Color CYAN{0, 210, 255};
+constexpr Color GREEN{0, 255, 80};
+constexpr Color YELLOW{255, 255, 0};
+constexpr Color RED{255, 0, 0};
+constexpr Color RADAR_GRID{0, 70, 90};
+constexpr Color RADAR_SWEEP_DIM{0, 45, 18};
+constexpr Color RADAR_SWEEP_MID{0, 120, 42};
+constexpr Color PURPLE{150, 50, 230};
+constexpr Color ORANGE{255, 105, 0};
+constexpr Color BLUE{30, 105, 255};
+
+void set_pixel(int x, int y, Color color) {
+    if (x < 0 || x >= WIDTH || y < 0 || y >= HEIGHT) return;
+    // Preserve the proven quadrant mapping, then rotate the image within each
+    // physical 64x32 tile. This corrects the upside-down image without moving
+    // any quadrant to a different panel.
+    const int panel_x = x / PHYSICAL_PANEL_WIDTH;
+    const int panel_y = y / PHYSICAL_PANEL_HEIGHT;
+    const int local_x = x % PHYSICAL_PANEL_WIDTH;
+    const int local_y = y % PHYSICAL_PANEL_HEIGHT;
+    // Hardware validation of v1.5.0 showed that the four upright tiles were
+    // globally reversed: left/right and top/bottom. Pre-permute both tile axes
+    // while retaining the proven per-tile 180-degree pixel correction.
+    const int destination_panel_x = WIDTH / PHYSICAL_PANEL_WIDTH - 1 - panel_x;
+    const int destination_panel_y = HEIGHT / PHYSICAL_PANEL_HEIGHT - 1 - panel_y;
+    const int rotated_x = destination_panel_x * PHYSICAL_PANEL_WIDTH +
+                          (PHYSICAL_PANEL_WIDTH - 1 - local_x);
+    const int rotated_y = destination_panel_y * PHYSICAL_PANEL_HEIGHT +
+                          (PHYSICAL_PANEL_HEIGHT - 1 - local_y);
+
+    // The first panel in the chain is on the physical bottom row.
+    const int chain_y = (rotated_y + PHYSICAL_PANEL_HEIGHT) % HEIGHT;
+    const int offset = (chain_y * WIDTH + rotated_x) * 3;
+    framebuffer[offset] = color.b;
+    framebuffer[offset + 1] = color.g;
+    framebuffer[offset + 2] = color.r;
+}
+
+void clear(Color color = BLACK) {
+    for (int y = 0; y < HEIGHT; ++y)
+        for (int x = 0; x < WIDTH; ++x) set_pixel(x, y, color);
+}
+
+void filled_rectangle(int x, int y, int width, int height, Color color) {
+    for (int py = y; py < y + height; ++py)
+        for (int px = x; px < x + width; ++px) set_pixel(px, py, color);
+}
+
+void draw_line(int x0, int y0, int x1, int y1, Color color) {
+    int dx = std::abs(x1 - x0);
+    int sx = x0 < x1 ? 1 : -1;
+    int dy = -std::abs(y1 - y0);
+    int sy = y0 < y1 ? 1 : -1;
+    int error = dx + dy;
+    for (;;) {
+        set_pixel(x0, y0, color);
+        if (x0 == x1 && y0 == y1) break;
+        const int twice_error = 2 * error;
+        if (twice_error >= dy) { error += dy; x0 += sx; }
+        if (twice_error <= dx) { error += dx; y0 += sy; }
+    }
+}
+
+int glyph_width(char character) {
+    const unsigned char c = static_cast<unsigned char>(character);
+    return (c >= 32 && c <= 127) ? font8.widths[c - 32] : font8.widths['?' - 32];
+}
+
+int text_width(const char *text) {
+    int width = 0;
+    for (size_t i = 0; text[i]; ++i) width += glyph_width(text[i]) + 1;
+    return width > 0 ? width - 1 : 0;
+}
+
+void draw_character(int x, int y, char character, Color color) {
+    unsigned char c = static_cast<unsigned char>(character);
+    if (c < 32 || c > 127) c = '?';
+    const int index = c - 32;
+    const uint8_t *columns = &font8.data[index * font8.max_width];
+    for (int column = 0; column < font8.widths[index]; ++column)
+        for (int row = 0; row < font8.height; ++row)
+            if (columns[column] & (1u << row)) set_pixel(x + column, y + row, color);
+}
+
+void draw_text(int x, int y, const char *text, Color color) {
+    for (size_t i = 0; text[i]; ++i) {
+        draw_character(x, y, text[i], color);
+        x += glyph_width(text[i]) + 1;
+    }
+}
+
+void centered_text(int y, const char *text, Color color) {
+    draw_text((WIDTH - text_width(text)) / 2, y, text, color);
+}
+
+void present() { driver.update_bgr(framebuffer); }
+
+void show_panel_mapping_test() {
+    clear();
+    filled_rectangle(63, 0, 2, HEIGHT, RADAR_GRID);
+    filled_rectangle(0, 31, WIDTH, 2, RADAR_GRID);
+    draw_text((PHYSICAL_PANEL_WIDTH - text_width("TOP LEFT")) / 2,
+              12, "TOP LEFT", CYAN);
+    draw_text(PHYSICAL_PANEL_WIDTH +
+              (PHYSICAL_PANEL_WIDTH - text_width("TOP RIGHT")) / 2,
+              12, "TOP RIGHT", GREEN);
+    draw_text((PHYSICAL_PANEL_WIDTH - text_width("BTM LEFT")) / 2,
+              44, "BTM LEFT", AMBER);
+    draw_text(PHYSICAL_PANEL_WIDTH +
+              (PHYSICAL_PANEL_WIDTH - text_width("BTM RIGHT")) / 2,
+              44, "BTM RIGHT", WHITE);
+    present();
+    sleep_ms(5000);
+}
+
+void show_startup() {
+    clear();
+    char version_line[32];
+    std::snprintf(version_line, sizeof(version_line), "EMBEDDED %s", APP_VERSION);
+    centered_text(16, APP_NAME, AMBER);
+    centered_text(24, version_line, WHITE);
+    centered_text(32, "PICO 2 W", CYAN);
+    centered_text(40, "BY JORDAN COBB", GREEN);
+    present();
+    sleep_ms(3500);
+}
+
+extern "C" void show_wifi_status(const char *line1, const char *line2, const char *line3) {
+    clear();
+    centered_text(17, line1 ? line1 : "WIFI", AMBER);
+    centered_text(28, line2 ? line2 : "", CYAN);
+    centered_text(39, line3 ? line3 : "", GREEN);
+    present();
+}
+
+void ota_checkpoint() {
+    uint32_t generation = flightwall_settings_generation();
+    if (generation != applied_settings_generation) {
+        const flightwall_settings_t *settings = flightwall_settings_get();
+        driver.setBasisBrightness(settings->panel_output_basis);
+        driver.setIntensity(settings->brightness_percent / 100.0f);
+        applied_settings_generation = generation;
+    }
+    if (!flightwall_ota_update_ready()) return;
+    clear();
+    centered_text(16, "UPDATE RECEIVED", AMBER);
+    centered_text(27, "RESTARTING", CYAN);
+    centered_text(38, "ROLLBACK PROTECTED", GREEN);
+    present();
+    sleep_ms(750);
+    flightwall_ota_reboot_to_update();
+}
+
+void normal_screen_delay() {
+    const uint32_t duration_ms = static_cast<uint32_t>(flightwall_settings_get()->display_seconds) * 1000u;
+    for (uint32_t elapsed = 0; elapsed < duration_ms; elapsed += 100u) {
+        if (flightwall_emergency_test_active() || flightwall_load_test_active()) break;
+        sleep_ms(std::min<uint32_t>(100, duration_ms - elapsed));
+    }
+}
+
+void draw_trend_arrow(int x, int y, bool climbing, Color color) {
+    if (climbing) {
+        set_pixel(x + 1, y, color);
+        set_pixel(x, y + 1, color); set_pixel(x + 1, y + 1, color); set_pixel(x + 2, y + 1, color);
+        for (int py = 2; py < 6; ++py) set_pixel(x + 1, y + py, color);
+    } else {
+        for (int py = 0; py < 4; ++py) set_pixel(x + 1, y + py, color);
+        set_pixel(x, y + 4, color); set_pixel(x + 1, y + 4, color); set_pixel(x + 2, y + 4, color);
+        set_pixel(x + 1, y + 5, color);
+    }
+}
+
+void draw_bearing_arrow(int x, int y, uint16_t bearing, Color color) {
+    static constexpr int dx[] = {0, 1, 1, 1, 0, -1, -1, -1};
+    static constexpr int dy[] = {-1, -1, 0, 1, 1, 1, 0, -1};
+    const int direction = ((bearing + 22) / 45) & 7;
+    const int cx = x + 2, cy = y + 3;
+    const int tip_x = cx + dx[direction] * 2;
+    const int tip_y = cy + dy[direction] * 2;
+    draw_line(cx, cy, tip_x, tip_y, color);
+    set_pixel(tip_x - dx[direction] + dy[direction],
+              tip_y - dy[direction] - dx[direction], color);
+    set_pixel(tip_x - dx[direction] - dy[direction],
+              tip_y - dy[direction] + dx[direction], color);
+}
+
+void compact_altitude(const flightwall_aircraft_t &plane, char *text, size_t size) {
+    if (plane.altitude_ft == INT32_MIN) std::snprintf(text, size, "---");
+    else if (plane.altitude_ft < 0) std::snprintf(text, size, "GND");
+    else std::snprintf(text, size, "%ld", static_cast<long>((plane.altitude_ft + 50) / 100));
+}
+
+void full_altitude(const flightwall_aircraft_t &plane, char *text, size_t size) {
+    if (plane.altitude_ft == INT32_MIN) std::snprintf(text, size, "---");
+    else if (plane.altitude_ft < 0) std::snprintf(text, size, "GND");
+    else std::snprintf(text, size, "%ld", static_cast<long>(plane.altitude_ft));
+}
+
+const char *cardinal_direction(uint16_t track) {
+    static constexpr const char *directions[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+    return directions[((track + 22) / 45) & 7];
+}
+
+void draw_circle(int cx, int cy, int radius, Color color);
+
+bool callsign_prefix(const char *id, const char *prefix) {
+    return id && std::strncmp(id, prefix, 3) == 0;
+}
+
+void draw_delta_mark(int x, int y) {
+    for (int row = 0; row < 12; ++row) {
+        const int half = row / 2;
+        for (int px = 6 - half; px <= 6 + half; ++px)
+            set_pixel(x + px, y + row, row < 7 ? RED : BLUE);
+    }
+    draw_text(x + 15, y + 3, "DELTA", WHITE);
+}
+
+void draw_united_mark(int x, int y) {
+    draw_circle(x + 7, y + 7, 7, BLUE);
+    draw_line(x + 1, y + 7, x + 13, y + 7, BLUE);
+    draw_line(x + 7, y + 1, x + 7, y + 13, BLUE);
+    draw_line(x + 3, y + 2, x + 3, y + 12, BLUE);
+    draw_line(x + 11, y + 2, x + 11, y + 12, BLUE);
+    draw_text(x + 18, y + 3, "UAL", WHITE);
+}
+
+void draw_american_mark(int x, int y) {
+    draw_line(x + 1, y + 12, x + 10, y + 2, BLUE);
+    draw_line(x + 4, y + 13, x + 13, y + 3, WHITE);
+    draw_line(x + 8, y + 13, x + 15, y + 6, RED);
+    draw_text(x + 19, y + 3, "AA", WHITE);
+}
+
+void draw_ups_mark(int x, int y) {
+    draw_line(x + 1, y + 1, x + 13, y + 1, AMBER);
+    draw_line(x + 1, y + 1, x + 1, y + 9, AMBER);
+    draw_line(x + 13, y + 1, x + 13, y + 9, AMBER);
+    draw_line(x + 1, y + 9, x + 7, y + 14, AMBER);
+    draw_line(x + 13, y + 9, x + 7, y + 14, AMBER);
+    draw_text(x + 17, y + 3, "UPS", AMBER);
+}
+
+void draw_fedex_mark(int x, int y) {
+    draw_text(x, y + 3, "FED", PURPLE);
+    draw_text(x + text_width("FED"), y + 3, "EX", ORANGE);
+}
+
+void draw_skywest_mark(int x, int y) {
+    draw_text(x, y, "SKY", CYAN);
+    draw_text(x + 4, y + 8, "WEST", WHITE);
+}
+
+void draw_republic_mark(int x, int y) {
+    set_pixel(x + 5, y + 1, RED);
+    draw_line(x + 1, y + 5, x + 9, y + 5, RED);
+    draw_line(x + 2, y + 2, x + 8, y + 10, RED);
+    draw_line(x + 8, y + 2, x + 2, y + 10, RED);
+    draw_text(x + 13, y + 3, "RPA", WHITE);
+}
+
+void draw_frontier_mark(int x, int y) {
+    draw_text(x, y + 3, "F9", GREEN);
+    draw_text(x + 14, y + 3, "FRONT", WHITE);
+}
+
+bool draw_airline_logo(int x, int y, const char *id) {
+    if (callsign_prefix(id, "DAL")) draw_delta_mark(x, y);
+    else if (callsign_prefix(id, "UAL")) draw_united_mark(x, y);
+    else if (callsign_prefix(id, "AAL")) draw_american_mark(x, y);
+    else if (callsign_prefix(id, "UPS")) draw_ups_mark(x, y);
+    else if (callsign_prefix(id, "FDX")) draw_fedex_mark(x, y);
+    else if (callsign_prefix(id, "SKW")) draw_skywest_mark(x, y);
+    else if (callsign_prefix(id, "RPA")) draw_republic_mark(x, y);
+    else if (callsign_prefix(id, "FFT")) draw_frontier_mark(x, y);
+    else return false;
+    return true;
+}
+
+void show_aircraft_list() {
+    clear();
+    const flightwall_settings_t *settings = flightwall_settings_get();
+    draw_text(0, 0, flightwall_aircraft_is_stale(settings->refresh_seconds) ? "STALE" : "AIRCRAFT", AMBER);
+    draw_text(48, 0, "ALT", AMBER);
+    draw_text(72, 0, "NM", AMBER);
+    draw_text(92, 0, "D", AMBER);
+    draw_text(104, 0, "TYPE", AMBER);
+
+    size_t count = 0;
+    const flightwall_aircraft_t *planes = flightwall_aircraft_list(&count);
+    if (count == 0) {
+        centered_text(27, flightwall_aircraft_has_success() ? "NO TRAFFIC IN RANGE" : flightwall_aircraft_status(),
+                      flightwall_aircraft_has_success() ? WHITE : AMBER);
+        present();
+        normal_screen_delay();
+        return;
+    }
+
+    constexpr size_t rows_per_page = 7;
+    const size_t pages = (count + rows_per_page - 1) / rows_per_page;
+    if (aircraft_page >= pages) aircraft_page = 0;
+    const size_t start = aircraft_page * rows_per_page;
+    char number[8], altitude[8];
+    for (size_t row = 0; row < rows_per_page && start + row < count; ++row) {
+        const flightwall_aircraft_t &plane = planes[start + row];
+        const int y = 8 + static_cast<int>(row) * 8;
+        draw_text(0, y, plane.id, plane.emergency ? RED : (plane.watched ? YELLOW : AMBER));
+        compact_altitude(plane, altitude, sizeof(altitude));
+        draw_text(48, y, altitude, CYAN);
+        if (plane.vertical_rate_fpm > 250 || plane.vertical_rate_fpm < -250)
+            draw_trend_arrow(67, y, plane.vertical_rate_fpm > 0, CYAN);
+        std::snprintf(number, sizeof(number), "%u", static_cast<unsigned>(std::min(999.0f, std::round(plane.distance_nm))));
+        draw_text(72, y, number, GREEN);
+        draw_text(92, y, cardinal_direction(plane.track_deg), CYAN);
+        draw_text(104, y, plane.type[0] ? plane.type : "----", WHITE);
+    }
+    aircraft_page = (aircraft_page + 1) % pages;
+    present();
+    normal_screen_delay();
+}
+
+void show_all_aircraft_pages() {
+    size_t count = 0;
+    flightwall_aircraft_list(&count);
+    constexpr size_t rows_per_page = 7;
+    const size_t pages = count ? (count + rows_per_page - 1) / rows_per_page : 1;
+
+    for (size_t page = 0; page < pages; ++page) {
+        show_aircraft_list();
+        ota_checkpoint();
+        if (flightwall_emergency_test_active() || flightwall_load_test_active()) break;
+    }
+}
+
+void show_spotlight() {
+    clear();
+    const flightwall_aircraft_t *plane = flightwall_aircraft_nearest();
+    if (!plane) {
+        centered_text(18, "NEAREST AIRCRAFT", AMBER);
+        centered_text(34, "NO TRAFFIC", WHITE);
+        present();
+        normal_screen_delay();
+        return;
+    }
+    char altitude[12], line[40];
+    full_altitude(*plane, altitude, sizeof(altitude));
+    draw_text(1, 0, "NEAREST", AMBER);
+    if (flightwall_aircraft_is_stale(flightwall_settings_get()->refresh_seconds))
+        draw_text(99, 0, "STALE", RED);
+    else if (plane->watched)
+        draw_text(98, 0, "WATCH", YELLOW);
+
+    // Keep the aircraft identity together above the horizontal panel seam.
+    draw_text(1, 10, plane->id, plane->watched ? YELLOW : AMBER);
+    draw_airline_logo(80, 9, plane->id);
+    std::snprintf(line, sizeof(line), "%s%s%s", plane->type[0] ? plane->type : "TYPE ----",
+                  plane->registration[0] ? "  " : "",
+                  plane->registration[0] ? plane->registration : "");
+    draw_text(1, 20, line, CYAN);
+
+    // Balance the flight data across both bottom panels. The y positions leave
+    // two clear rows below the seam and one clear row at the bottom edge.
+    if (plane->altitude_ft >= 0)
+        std::snprintf(line, sizeof(line), "%s FT", altitude);
+    else
+        std::snprintf(line, sizeof(line), "%s", altitude);
+    draw_text(1, 34, line, CYAN);
+    if (plane->vertical_rate_fpm > 250 || plane->vertical_rate_fpm < -250)
+        draw_trend_arrow(std::min(59, text_width(line) + 4), 35,
+                         plane->vertical_rate_fpm > 0, CYAN);
+
+    std::snprintf(line, sizeof(line), "%u NM %s",
+                  static_cast<unsigned>(std::min(999.0f, std::round(plane->distance_nm))),
+                  cardinal_direction(plane->bearing_deg));
+    draw_text(67, 34, line, GREEN);
+    draw_bearing_arrow(120, 34, plane->bearing_deg, GREEN);
+
+    std::snprintf(line, sizeof(line), "%+d FPM", plane->vertical_rate_fpm);
+    draw_text(1, 45, line, CYAN);
+    std::snprintf(line, sizeof(line), "%u KT", plane->speed_kt);
+    draw_text(67, 45, line, GREEN);
+
+    std::snprintf(line, sizeof(line), "TRK %03u", plane->track_deg);
+    draw_text(1, 55, line, CYAN);
+    std::snprintf(line, sizeof(line), "SQK %s", plane->squawk[0] ? plane->squawk : "----");
+    draw_text(67, 55, line, plane->watched ? YELLOW : WHITE);
+    present();
+    normal_screen_delay();
+}
+
+void draw_circle(int cx, int cy, int radius, Color color) {
+    int x = radius, y = 0, error = 1 - radius;
+    while (x >= y) {
+        set_pixel(cx + x, cy + y, color); set_pixel(cx + y, cy + x, color);
+        set_pixel(cx - y, cy + x, color); set_pixel(cx - x, cy + y, color);
+        set_pixel(cx - x, cy - y, color); set_pixel(cx - y, cy - x, color);
+        set_pixel(cx + y, cy - x, color); set_pixel(cx + x, cy - y, color);
+        ++y;
+        if (error < 0) error += 2 * y + 1;
+        else { --x; error += 2 * (y - x + 1); }
+    }
+}
+
+void radar_dot(int cx, int cy, int radius, float bearing, float distance_fraction, Color color) {
+    constexpr float pi = 3.14159265f;
+    const float angle = (bearing - 90.0f) * pi / 180.0f;
+    const int x = static_cast<int>(std::lround(cx + std::cos(angle) * radius * distance_fraction));
+    const int y = static_cast<int>(std::lround(cy + std::sin(angle) * radius * distance_fraction));
+    set_pixel(x, y, color);
+}
+
+void draw_radar_sweep(int cx, int cy, int radius, float angle_degrees, Color color) {
+    constexpr float pi = 3.14159265f;
+    const float angle = (angle_degrees - 90.0f) * pi / 180.0f;
+    const int x = static_cast<int>(std::lround(cx + std::cos(angle) * radius));
+    const int y = static_cast<int>(std::lround(cy + std::sin(angle) * radius));
+    draw_line(cx, cy, x, y, color);
+}
+
+void draw_summary_frame(float sweep_angle) {
+    clear();
+    constexpr int cx = 30, cy = 31, radar_radius = 28;
+    // Paint the sweep underneath the radar grid so it cannot dim or replace
+    // pixels in the blue rings and crosshairs.
+    draw_radar_sweep(cx, cy, radar_radius, sweep_angle - 12.0f, RADAR_SWEEP_DIM);
+    draw_radar_sweep(cx, cy, radar_radius, sweep_angle - 6.0f, RADAR_SWEEP_MID);
+    draw_radar_sweep(cx, cy, radar_radius, sweep_angle, GREEN);
+    draw_circle(cx, cy, radar_radius, RADAR_GRID);
+    draw_circle(cx, cy, radar_radius / 2, RADAR_GRID);
+    for (int y = cy - radar_radius; y <= cy + radar_radius; ++y) set_pixel(cx, y, RADAR_GRID);
+    for (int x = cx - radar_radius; x <= cx + radar_radius; ++x) set_pixel(x, cy, RADAR_GRID);
+    set_pixel(cx, cy, GREEN); set_pixel(cx - 1, cy, GREEN); set_pixel(cx + 1, cy, GREEN);
+    set_pixel(cx, cy - 1, GREEN); set_pixel(cx, cy + 1, GREEN);
+    size_t count = 0;
+    const flightwall_aircraft_t *planes = flightwall_aircraft_list(&count);
+    const float radius = std::max(1u, static_cast<unsigned>(flightwall_settings_get()->radius_nm));
+    for (size_t i = 0; i < count; ++i)
+        radar_dot(cx, cy, radar_radius, planes[i].bearing_deg,
+                  std::min(1.0f, planes[i].distance_nm / radius),
+                  planes[i].emergency ? RED : (planes[i].watched ? YELLOW : CYAN));
+
+    char line[24];
+    std::snprintf(line, sizeof(line), "NOW %u", static_cast<unsigned>(count));
+    draw_text(64, 2, line, WHITE);
+    std::snprintf(line, sizeof(line), "1HR %lu", static_cast<unsigned long>(flightwall_aircraft_unique_hour()));
+    draw_text(64, 14, line, CYAN);
+    std::snprintf(line, sizeof(line), "24HR %lu", static_cast<unsigned long>(flightwall_aircraft_unique_day()));
+    draw_text(64, 26, line, AMBER);
+    const flightwall_aircraft_t *nearest = flightwall_aircraft_nearest();
+    if (nearest) std::snprintf(line, sizeof(line), "NEAR %uNM",
+                               static_cast<unsigned>(std::min(999.0f, std::round(nearest->distance_nm))));
+    else std::snprintf(line, sizeof(line), "NEAR ---");
+    draw_text(64, 38, line, GREEN);
+    std::snprintf(line, sizeof(line), "RANGE %uNM", flightwall_settings_get()->radius_nm);
+    draw_text(64, 50, line, WHITE);
+}
+
+void show_summary() {
+    constexpr uint32_t frame_ms = 100;
+    const uint32_t duration_ms = static_cast<uint32_t>(flightwall_settings_get()->display_seconds) * 1000u;
+    const uint32_t frame_count = (duration_ms + frame_ms - 1) / frame_ms;
+    for (uint32_t frame = 0; frame < frame_count; ++frame) {
+        if (flightwall_emergency_test_active() || flightwall_load_test_active()) break;
+        draw_summary_frame(static_cast<float>((frame * 6u) % 360u));
+        present();
+        sleep_ms(std::min<uint32_t>(frame_ms, duration_ms - frame * frame_ms));
+    }
+}
+
+const char *emergency_description(const flightwall_aircraft_t &plane) {
+    if (std::strcmp(plane.squawk, "7500") == 0) return "HIJACK";
+    if (std::strcmp(plane.squawk, "7600") == 0) return "RADIO";
+    return "EMERGENCY";
+}
+
+void show_emergency(const flightwall_aircraft_t &plane, bool test_mode = false) {
+    const char *label = "*** EMERGENCY ***";
+    const int label_x = (WIDTH - text_width(label)) / 2;
+    char altitude[12], line[40];
+    full_altitude(plane, altitude, sizeof(altitude));
+    for (int frame = 0; frame < 12; ++frame) {
+        if (test_mode && !flightwall_emergency_test_active()) break;
+        clear();
+        filled_rectangle(0, 0, WIDTH, 2, RED);
+        filled_rectangle(0, HEIGHT - 2, WIDTH, 2, RED);
+        filled_rectangle(0, 5, label_x - 3, 3, RED);
+        filled_rectangle(label_x + text_width(label) + 3, 5,
+                         WIDTH - label_x - text_width(label) - 3, 3, RED);
+        if ((frame % 2) == 0) draw_text(label_x, 3, label, RED);
+        centered_text(16, plane.id, RED);
+        std::snprintf(line, sizeof(line), "SQK %s %s", plane.squawk[0] ? plane.squawk : "----",
+                      emergency_description(plane));
+        centered_text(28, line, RED);
+        std::snprintf(line, sizeof(line), "ALT %s  %uNM", altitude,
+                      static_cast<unsigned>(std::min(999.0f, std::round(plane.distance_nm))));
+        centered_text(40, line, RED);
+        std::snprintf(line, sizeof(line), "GS %uKT  TRK %03u", plane.speed_kt, plane.track_deg);
+        centered_text(52, line, RED);
+        present();
+        sleep_ms(500);
+    }
+}
+
+void show_stale_data() {
+    clear();
+    centered_text(15, "AIRCRAFT DATA", AMBER);
+    centered_text(27, "STALE", RED);
+    centered_text(39, flightwall_aircraft_status(), WHITE);
+    centered_text(51, "RETRYING", CYAN);
+    present();
+    normal_screen_delay();
+}
+
+flightwall_aircraft_t emergency_test_aircraft() {
+    flightwall_aircraft_t plane{};
+    std::snprintf(plane.id, sizeof(plane.id), "TEST7700");
+    std::snprintf(plane.type, sizeof(plane.type), "TEST");
+    std::snprintf(plane.squawk, sizeof(plane.squawk), "7700");
+    plane.altitude_ft = 4300;
+    plane.speed_kt = 210;
+    plane.distance_nm = 12.0f;
+    plane.emergency = true;
+    return plane;
+}
+
+void show_load_test() {
+    driver.setIntensity(1.0f);
+    clear(WHITE);
+    present();
+    for (int tenth = 0; tenth < 100 && flightwall_load_test_active(); ++tenth) {
+        if (flightwall_aircraft_emergency()) break;
+        sleep_ms(100);
+    }
+    flightwall_load_test_complete();
+    driver.setIntensity(flightwall_settings_get()->brightness_percent / 100.0f);
+    clear();
+    present();
+}
+
+void core1_entry() {
+    multicore_lockout_victim_init();
+    driver.create();
+    driver.start();
+    while (true) tight_loop_contents();
+}
+
+int main() {
+    set_sys_clock_khz(150000, true);
+    stdio_init_all();
+    flightwall_ota_confirm_running_image();
+
+    // The Pico W radio and HUB75 engine both consume PIO/DMA resources. Claim
+    // the radio resources first; the HUB75 allocator is designed to route
+    // itself around an existing CYW43 allocation.
+    const int wifi_init_result = cyw43_arch_init();
+    flightwall_settings_load();
+    multicore_reset_core1();
+    multicore_launch_core1(core1_entry);
+    sleep_ms(250);
+
+    const flightwall_settings_t *settings = flightwall_settings_get();
+    driver.setBasisBrightness(settings->panel_output_basis);
+    driver.setIntensity(settings->brightness_percent / 100.0f);
+    applied_settings_generation = flightwall_settings_generation();
+
+    show_panel_mapping_test();
+    show_startup();
+    if (wifi_init_result != PICO_OK) {
+        show_wifi_status("WIFI INIT ERROR", "RADIO NOT READY", "USB RECOVERY READY");
+        while (true) sleep_ms(1000);
+    }
+    if (flightwall_wifi_connect_or_provision(show_wifi_status) != 0) {
+        show_wifi_status("WIFI ERROR", "RESTART DEVICE", "USB RECOVERY READY");
+        while (true) sleep_ms(1000);
+    }
+    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, true);
+    if (!flightwall_ota_start()) {
+        show_wifi_status("OTA ERROR", flightwall_wifi_ip_address(), "DISPLAY STILL WORKS");
+        sleep_ms(3000);
+    } else {
+        show_wifi_status("FLIGHTWALL ONLINE", flightwall_wifi_ip_address(), "WEB SETTINGS READY");
+        sleep_ms(6000);
+    }
+
+    flightwall_aircraft_init();
+    show_wifi_status("FETCHING AIRCRAFT", "DATA FROM ADSB.FI", "PLEASE WAIT");
+    flightwall_aircraft_refresh();
+
+    while (true) {
+        const flightwall_settings_t *current_settings = flightwall_settings_get();
+        if (flightwall_aircraft_refresh_due(current_settings->refresh_seconds))
+            flightwall_aircraft_refresh();
+
+        const bool data_stale = flightwall_aircraft_is_stale(current_settings->refresh_seconds);
+        if (!data_stale) {
+            if (const flightwall_aircraft_t *emergency = flightwall_aircraft_emergency()) {
+                show_emergency(*emergency);
+                ota_checkpoint();
+                continue;
+            }
+        }
+
+        if (flightwall_emergency_test_active()) {
+            const flightwall_aircraft_t test_plane = emergency_test_aircraft();
+            show_emergency(test_plane, true);
+            ota_checkpoint();
+            continue;
+        }
+
+        if (flightwall_load_test_active()) {
+            show_load_test();
+            ota_checkpoint();
+            continue;
+        }
+
+        if (data_stale) {
+            show_stale_data();
+            ota_checkpoint();
+            continue;
+        }
+
+        show_all_aircraft_pages();
+        if (flightwall_emergency_test_active() || flightwall_load_test_active()) continue;
+        current_settings = flightwall_settings_get();
+        if (flightwall_aircraft_refresh_due(current_settings->refresh_seconds))
+            flightwall_aircraft_refresh();
+        if (flightwall_aircraft_is_stale(current_settings->refresh_seconds)) continue;
+        show_spotlight();
+        ota_checkpoint();
+        if (flightwall_emergency_test_active() || flightwall_load_test_active()) continue;
+        current_settings = flightwall_settings_get();
+        if (flightwall_aircraft_refresh_due(current_settings->refresh_seconds))
+            flightwall_aircraft_refresh();
+        if (flightwall_aircraft_is_stale(current_settings->refresh_seconds)) continue;
+        show_summary();
+        ota_checkpoint();
+    }
+}
