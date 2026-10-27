@@ -20,6 +20,7 @@ typedef struct {
     uint8_t panel_output_basis;
     uint16_t refresh_seconds;
     uint8_t display_seconds;
+    bool auto_install_updates;
     uint8_t watched_count;
     char watched[FLIGHTWALL_MAX_WATCHED][FLIGHTWALL_WATCH_ID_SIZE];
 } flightwall_settings_t;
@@ -40,6 +41,7 @@ bool flightwall_settings_update(float latitude, float longitude,
 bool flightwall_settings_is_watched(const char *id, const char *registration,
                                     const char *hex);
 size_t flightwall_watchlist_format(char *buffer, size_t buffer_size);
+bool flightwall_settings_set_auto_install_updates(bool enabled);
 
 #ifdef __cplusplus
 }
