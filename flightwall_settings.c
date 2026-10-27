@@ -282,7 +282,7 @@ void flightwall_settings_load(void) {
                     printf("loaded and migrated FlightWall v3 settings\n");
                 } else {
                     const stored_settings_v4_t *v4 = (const stored_settings_v4_t *)sector;
-                    if (v4->magic == SETTINGS_MAGIC && v4->version == SETTINGS_VERSION &&
+                    if (v4->magic == SETTINGS_MAGIC && v4->version == 4 &&
                         v4->size == sizeof(*v4) && v4->watched_count <= FLIGHTWALL_MAX_WATCHED &&
                         v4->checksum == fnv1a(v4, offsetof(stored_settings_v4_t, checksum)) &&
                         values_valid(v4->latitude, v4->longitude, v4->radius_nm,
@@ -296,12 +296,13 @@ void flightwall_settings_load(void) {
                         current_settings.panel_output_basis = v4->panel_output_basis;
                         current_settings.refresh_seconds = v4->refresh_seconds;
                         current_settings.display_seconds = v4->display_seconds;
+                        current_settings.auto_install_updates = true;
                         current_settings.watched_count = v4->watched_count;
                         memcpy(current_settings.watched, v4->watched, sizeof(v4->watched));
                         for (uint8_t i = 0; i < current_settings.watched_count; ++i)
                             current_settings.watched[i][FLIGHTWALL_WATCH_ID_SIZE - 1] = '\0';
                         valid = true;
-                        printf("loaded FlightWall settings\n");
+                        printf("loaded and migrated FlightWall v4 settings\n");
                     }
                 }
             }
