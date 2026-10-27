@@ -7,9 +7,10 @@ aircraft screen, and an animated radar display.
 
 Current source release: **v1.6.1**
 
-Download the one-time USB installer: [FlightWall-v1.6.0.uf2](release/FlightWall-v1.6.0.uf2).
-Devices already running v1.5.2 need this manual installation once; subsequent
-releases are fetched automatically from the signed update feed.
+Download the recovery USB installer: [FlightWall-v1.6.1.uf2](release/FlightWall-v1.6.1.uf2).
+Devices running v1.6.0 must install v1.6.1 manually once to rotate to the
+replacement signing key. After that, subsequent releases can again be fetched
+automatically from the signed update feed.
 
 ## Hardware
 
