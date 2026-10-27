@@ -120,12 +120,36 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
 
   <section class="card">
     <h2>Firmware update</h2>
-    <p>FlightWall checks its signed GitHub update feed at startup and every six hours. A downloaded image is installed only after its signed manifest and SHA-256 digest are verified.</p>
-    <p>Select a FlightWall Stage 3 application UF2. The active firmware remains untouched until the new A/B image is complete.</p>
-    <input id="firmware" type="file" accept=".uf2,application/octet-stream">
-    <p><button id="install" type="button">Install firmware</button></p>
-    <progress id="progress" value="0" max="100" style="width:100%;display:none"></progress>
-    <p id="updateStatus"></p>
+    <div class="status">
+      <span class="label">Installed</span><span>v<!--#version--></span>
+      <span class="label">Update status</span><span><!--#update--></span>
+    </div>
+    <p>FlightWall checks its signed GitHub update feed at startup and every six hours.</p>
+
+    <form action="/update_auto.cgi" method="get">
+      <label><input type="checkbox" name="enabled" value="1" <!--#autoupdate-->> Automatically install signed updates</label><br>
+      <small>When disabled, FlightWall still checks for updates but waits for you to install them.</small><br><br>
+      <input type="submit" value="Save update preference">
+    </form>
+
+    <form action="/check_update.cgi" method="get">
+      <input type="submit" value="Check for update">
+    </form>
+
+    <form action="/install_update.cgi" method="get" onsubmit="return confirm('Install the newest signed FlightWall update if one is available?');">
+      <input type="submit" value="Install available update">
+    </form>
+
+    <p><small>Checks run in the display loop, so the status above may take a few seconds to change. Refresh this page to see the result.</small></p>
+
+    <details>
+      <summary>Manual firmware upload</summary>
+      <p>Select a FlightWall Stage 3 application UF2. The active firmware remains untouched until the new A/B image is complete.</p>
+      <input id="firmware" type="file" accept=".uf2,application/octet-stream">
+      <p><button id="install" type="button">Upload firmware</button></p>
+      <progress id="progress" value="0" max="100" style="width:100%;display:none"></progress>
+      <p id="updateStatus"></p>
+    </details>
   </section>
 </main>
 <script>
