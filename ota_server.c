@@ -462,6 +462,11 @@ bool flightwall_ota_http_finish(void) {
     return true;
 }
 
+void flightwall_ota_http_abort(void) {
+    if (!ota_state) return;
+    tcp_update_server_reset_transfer(ota_state);
+}
+
 bool flightwall_ota_update_ready(void) {
     return ota_state &&
            ota_state->complete &&

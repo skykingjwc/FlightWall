@@ -5,7 +5,11 @@ FlightWall is a self-contained live-aircraft display for a Raspberry Pi Pico
 adsb.fi open-data API and presents a rotating traffic list, a detailed nearest-
 aircraft screen, and an animated radar display.
 
-Current firmware: **v1.5.2**
+Current firmware: **v1.6.0**
+
+Download the one-time USB installer: [FlightWall-v1.6.0.uf2](release/FlightWall-v1.6.0.uf2).
+Devices already running v1.5.2 need this manual installation once; subsequent
+releases are fetched automatically from the signed update feed.
 
 ## Hardware
 
@@ -43,6 +47,7 @@ GPIO mapping:
 - Watched-aircraft and transponder-emergency alerts
 - Startup quadrant test and display load test
 - Browser-uploaded A/B firmware updates with rollback-friendly boot behavior
+- Signed automatic updates from GitHub at startup and every six hours
 
 Configuration is stored in flash on the Pico; Wi-Fi credentials and personal
 location data are not compiled into the source or included in this repository.
@@ -77,12 +82,12 @@ cmake -S . -B build \
   -DFLIGHTWALL_SIGNING_KEY=/secure/path/to/flightwall-private.pem
 ```
 
-See [SECURITY.md](SECURITY.md) before distributing signed or automatic
-updates.
+See [SECURITY.md](SECURITY.md) and [update/README.md](update/README.md) before
+distributing signed or automatic updates.
 
 ## Documentation
 
-- [v1.5.2 release notes](RELEASE-v1.5.2.md)
+- [v1.6.0 release notes](RELEASE-v1.6.0.md)
 - [FlightWall source and build notes](FLIGHTWALL-SOURCE-BACKUP.md)
 - [Upstream HUB75 driver documentation](https://github.com/JuPfu/hub75)
 

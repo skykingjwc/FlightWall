@@ -39,6 +39,9 @@ secrets.*
 *.uf2
 *.map
 
+# The stable, signed automatic-update payload is intentionally published.
+!update/flightwall.uf2
+
 # OS/editor files
 .DS_Store
 Thumbs.db

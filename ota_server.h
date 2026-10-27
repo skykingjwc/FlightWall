@@ -21,6 +21,7 @@ bool flightwall_ota_start(void);
 bool flightwall_ota_http_begin(size_t content_length);
 bool flightwall_ota_http_write(const uint8_t *data, size_t length);
 bool flightwall_ota_http_finish(void);
+void flightwall_ota_http_abort(void);
 
 // Returns true after a complete image has arrived. The caller should blank or
 // annotate the display and then call flightwall_ota_reboot_to_update().

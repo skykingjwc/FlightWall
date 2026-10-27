@@ -15,6 +15,7 @@
 #include "flightwall_settings.h"
 #include "hub75.hpp"
 #include "ota_server.h"
+#include "update_client.h"
 #include "wifi_provisioning.h"
 
 constexpr char APP_NAME[] = "CHATGPT FLIGHTWALL";
@@ -214,6 +215,7 @@ void ota_checkpoint() {
         driver.setIntensity(settings->brightness_percent / 100.0f);
         applied_settings_generation = generation;
     }
+    if (!flightwall_ota_update_ready()) (void)flightwall_update_check_due();
     if (!flightwall_ota_update_ready()) return;
     clear();
     centered_text(16, "UPDATE RECEIVED", AMBER);
@@ -654,6 +656,14 @@ int main() {
     } else {
         show_wifi_status("FLIGHTWALL ONLINE", flightwall_wifi_ip_address(), "WEB SETTINGS READY");
         sleep_ms(6000);
+    }
+
+    flightwall_update_init();
+    show_wifi_status("CHECKING UPDATES", "SIGNED GITHUB FEED", "PLEASE WAIT");
+    if (flightwall_update_check_now()) {
+        show_wifi_status("UPDATE VERIFIED", flightwall_update_status(), "RESTARTING");
+        while (!flightwall_ota_update_ready()) sleep_ms(50);
+        ota_checkpoint();
     }
 
     flightwall_aircraft_init();

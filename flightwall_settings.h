@@ -24,7 +24,7 @@ typedef struct {
     char watched[FLIGHTWALL_MAX_WATCHED][FLIGHTWALL_WATCH_ID_SIZE];
 } flightwall_settings_t;
 
-// Load persistent settings, falling back to safe DeWitt defaults if the
+// Load persistent settings, falling back to the public KLAN airport location if the
 // settings sector is erased or invalid.
 void flightwall_settings_load(void);
 const flightwall_settings_t *flightwall_settings_get(void);

@@ -8,6 +8,7 @@
 #include "pico/stdlib.h"
 #include "wifi_provisioning.h"
 #include "ota_server.h"
+#include "update_client.h"
 #include "flightwall_settings.h"
 
 #include "lwip/ip4_addr.h"
@@ -121,7 +122,8 @@ static const char *ssi_tags[] = {
     "basis",
     "refresh",
     "timing",
-    "watch"
+    "watch",
+    "update"
 };
 
 static void start_http_server(void) {
@@ -900,6 +902,10 @@ static u16_t ssi_handler(int iIndex, char *pcInsert, int iInsertLen
         }
         case 13: { // watched aircraft
             printed = (int)flightwall_watchlist_format(pcInsert, (size_t)iInsertLen);
+            break;
+        }
+        case 14: { // signed automatic-update status
+            printed = snprintf(pcInsert, iInsertLen, "%s", flightwall_update_status());
             break;
         }
         default: { // unknown tag

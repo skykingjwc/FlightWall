@@ -47,6 +47,7 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
       <span class="label">Hostname</span><span><!--#hostname--></span>
       <span class="label">IP address</span><span><!--#ipaddr--></span>
       <span class="label">OTA service</span><span>Ready on TCP 4242</span>
+      <span class="label">Auto update</span><span><!--#update--></span>
     </div>
   </section>
 
@@ -119,6 +120,7 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
 
   <section class="card">
     <h2>Firmware update</h2>
+    <p>FlightWall checks its signed GitHub update feed at startup and every six hours. A downloaded image is installed only after its signed manifest and SHA-256 digest are verified.</p>
     <p>Select a FlightWall Stage 3 application UF2. The active firmware remains untouched until the new A/B image is complete.</p>
     <input id="firmware" type="file" accept=".uf2,application/octet-stream">
     <p><button id="install" type="button">Install firmware</button></p>
