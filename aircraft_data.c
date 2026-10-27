@@ -394,7 +394,6 @@ bool flightwall_aircraft_refresh(void) {
 }
 
 bool flightwall_aircraft_refresh_due(uint32_t refresh_seconds) {
-    if (!has_success) return true;
     return now_ms() - last_attempt_ms >= refresh_seconds * 1000u;
 }
 
