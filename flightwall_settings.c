@@ -10,7 +10,7 @@
 #include "pico/flash.h"
 
 #define SETTINGS_MAGIC 0x46575331u  // "FWS1"
-#define SETTINGS_VERSION 4u
+#define SETTINGS_VERSION 5u
 #define SETTINGS_FLASH_OFFSET (PICO_FLASH_BANK_STORAGE_OFFSET + FLASH_SECTOR_SIZE)
 
 typedef struct {
@@ -74,6 +74,24 @@ typedef struct {
     uint32_t checksum;
 } stored_settings_v4_t;
 
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t size;
+    float latitude;
+    float longitude;
+    uint16_t radius_nm;
+    uint8_t brightness_percent;
+    uint8_t panel_output_basis;
+    uint16_t refresh_seconds;
+    uint8_t display_seconds;
+    uint8_t auto_install_updates;
+    uint8_t watched_count;
+    uint8_t reserved0;
+    char watched[FLIGHTWALL_MAX_WATCHED][FLIGHTWALL_WATCH_ID_SIZE];
+    uint32_t checksum;
+} stored_settings_v5_t;
+
 static flightwall_settings_t current_settings;
 static volatile uint32_t settings_generation;
 
@@ -116,6 +134,7 @@ static void load_defaults(void) {
     current_settings.panel_output_basis = 8;
     current_settings.refresh_seconds = 30;
     current_settings.display_seconds = 6;
+    current_settings.auto_install_updates = true;
 }
 
 static bool parse_watchlist(const char *text, flightwall_settings_t *settings) {
@@ -159,7 +178,7 @@ static bool parse_watchlist(const char *text, flightwall_settings_t *settings) {
 
 static bool persist_settings(const flightwall_settings_t *settings) {
     uint8_t sector[FLASH_SECTOR_SIZE] = {0};
-    stored_settings_v4_t *stored = (stored_settings_v4_t *)sector;
+    stored_settings_v5_t *stored = (stored_settings_v5_t *)sector;
     stored->magic = SETTINGS_MAGIC;
     stored->version = SETTINGS_VERSION;
     stored->size = sizeof(*stored);
@@ -170,9 +189,10 @@ static bool persist_settings(const flightwall_settings_t *settings) {
     stored->panel_output_basis = settings->panel_output_basis;
     stored->refresh_seconds = settings->refresh_seconds;
     stored->display_seconds = settings->display_seconds;
+    stored->auto_install_updates = settings->auto_install_updates ? 1u : 0u;
     stored->watched_count = settings->watched_count;
     memcpy(stored->watched, settings->watched, sizeof(stored->watched));
-    stored->checksum = fnv1a(stored, offsetof(stored_settings_v4_t, checksum));
+    stored->checksum = fnv1a(stored, offsetof(stored_settings_v5_t, checksum));
 
     cflash_flags_t erase_flags = {
         .flags =
