@@ -1,0 +1,48 @@
+name: Publish v1.6.1 Recovery
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-recovery.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out FlightWall
+        uses: actions/checkout@v4
+
+      - name: Download verified v1.6.1 build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: FlightWall-UF2
+          path: artifact
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: 40430774883
+
+      - name: Prepare release binaries
+        run: |
+          mkdir -p release update
+          cp artifact/hub75_demo.uf2 release/FlightWall-v1.6.1.uf2
+          python3 - <<'PY'
+          from pathlib import Path
+          full = Path("artifact/hub75_demo.uf2").read_bytes()
+          payload = bytearray(full[512:])
+          payload.extend(b"\x00" * ((-len(payload)) % 2048))
+          Path("update/flightwall.uf2").write_bytes(payload)
+          PY
+
+      - name: Publish recovery binaries
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f release/FlightWall-v1.6.1.uf2 update/flightwall.uf2
+          git commit -m "Publish FlightWall v1.6.1 recovery binaries"
+          git push
