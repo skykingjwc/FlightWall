@@ -61,6 +61,10 @@ typedef struct {
 
 static struct altcp_tls_config *tls_config;
 static altcp_allocator_t tls_allocator;
+// lwIP retains a pointer to these settings for the lifetime of each request,
+// so this must not be a stack-local object in start_get(). Requests are
+// serialized by flightwall_update_check_now().
+static httpc_connection_t http_connection;
 static update_request_t request;
 static uint8_t small_response[SMALL_RESPONSE_CAPACITY + 1];
 static uint8_t signature[SIGNATURE_CAPACITY];
@@ -185,12 +189,12 @@ static bool decode_chunked(uint8_t *data, size_t *length, size_t capacity) {
 }
 
 static bool start_get(const char *path) {
-    httpc_connection_t connection = {0};
-    connection.altcp_allocator = &tls_allocator;
-    connection.result_fn = request_finished;
-    connection.headers_done_fn = headers_received;
+    memset(&http_connection, 0, sizeof(http_connection));
+    http_connection.altcp_allocator = &tls_allocator;
+    http_connection.result_fn = request_finished;
+    http_connection.headers_done_fn = headers_received;
     cyw43_arch_lwip_begin();
-    err_t rc = httpc_get_file_dns(UPDATE_HOST, UPDATE_PORT, path, &connection,
+    err_t rc = httpc_get_file_dns(UPDATE_HOST, UPDATE_PORT, path, &http_connection,
                                   receive_body, NULL, NULL);
     cyw43_arch_lwip_end();
     return rc == ERR_OK;
