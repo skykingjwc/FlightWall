@@ -77,8 +77,10 @@ constexpr Color GREEN{0, 255, 80};
 constexpr Color YELLOW{255, 255, 0};
 constexpr Color RED{255, 0, 0};
 constexpr Color RADAR_GRID{0, 70, 90};
-constexpr Color RADAR_SWEEP_DIM{0, 45, 18};
-constexpr Color RADAR_SWEEP_MID{0, 120, 42};
+constexpr Color RADAR_SWEEP_FAINT{0, 20, 8};
+constexpr Color RADAR_SWEEP_DIM{0, 35, 14};
+constexpr Color RADAR_SWEEP_MID{0, 65, 24};
+constexpr Color RADAR_SWEEP_LEAD{0, 130, 42};
 constexpr Color PURPLE{150, 50, 230};
 constexpr Color ORANGE{255, 105, 0};
 constexpr Color BLUE{30, 105, 255};
@@ -215,6 +217,7 @@ void ota_checkpoint() {
         driver.setIntensity(settings->brightness_percent / 100.0f);
         applied_settings_generation = generation;
     }
+    if (!flightwall_ota_update_ready()) (void)flightwall_update_process_requests();
     if (!flightwall_ota_update_ready()) (void)flightwall_update_check_due();
     if (!flightwall_ota_update_ready()) return;
     clear();
@@ -542,9 +545,10 @@ void draw_summary_frame(float sweep_angle) {
     for (int y = cy - radar_radius; y <= cy + radar_radius; ++y) mark_radar_grid_pixel(cx, y);
     for (int x = cx - radar_radius; x <= cx + radar_radius; ++x) mark_radar_grid_pixel(x, cy);
 
-    draw_radar_sweep(cx, cy, radar_radius, sweep_angle - 12.0f, RADAR_SWEEP_DIM);
-    draw_radar_sweep(cx, cy, radar_radius, sweep_angle - 6.0f, RADAR_SWEEP_MID);
-    draw_radar_sweep(cx, cy, radar_radius, sweep_angle, GREEN);
+    draw_radar_sweep(cx, cy, radar_radius, sweep_angle - 24.0f, RADAR_SWEEP_FAINT);
+    draw_radar_sweep(cx, cy, radar_radius, sweep_angle - 16.0f, RADAR_SWEEP_DIM);
+    draw_radar_sweep(cx, cy, radar_radius, sweep_angle - 8.0f, RADAR_SWEEP_MID);
+    draw_radar_sweep(cx, cy, radar_radius, sweep_angle, RADAR_SWEEP_LEAD);
     set_pixel(cx, cy, GREEN); set_pixel(cx - 1, cy, GREEN); set_pixel(cx + 1, cy, GREEN);
     set_pixel(cx, cy - 1, GREEN); set_pixel(cx, cy + 1, GREEN);
     size_t count = 0;
