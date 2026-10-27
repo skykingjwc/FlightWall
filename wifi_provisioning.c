@@ -130,7 +130,7 @@ static const char *ssi_tags[] = {
     "timing",
     "watch",
     "update",
-    "autoupdate"
+    "autoinst"
 };
 
 static void start_http_server(void) {
