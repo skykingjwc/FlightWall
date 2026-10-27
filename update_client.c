@@ -393,9 +393,13 @@ static bool check_now(bool force_install) {
         return false;
     }
 
-    snprintf(update_status, sizeof(update_status), "DOWNLOADING %s", manifest.version);
     printf("FlightWall update %s (build %lu, %lu bytes) available\n",
            manifest.version, (unsigned long)manifest.build, (unsigned long)manifest.size);
+    if (!force_install && !flightwall_settings_get()->auto_install_updates) {
+        snprintf(update_status, sizeof(update_status), "AVAILABLE %s", manifest.version);
+        return false;
+    }
+    snprintf(update_status, sizeof(update_status), "DOWNLOADING %s", manifest.version);
     if (!download_update(&manifest)) {
         last_check_succeeded = false;
         snprintf(update_status, sizeof(update_status), "UPDATE DOWNLOAD FAILED");
