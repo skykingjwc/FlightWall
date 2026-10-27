@@ -485,26 +485,66 @@ void radar_dot(int cx, int cy, int radius, float bearing, float distance_fractio
     set_pixel(x, y, color);
 }
 
+static bool radar_grid_mask[WIDTH * HEIGHT];
+
+void mark_radar_grid_pixel(int x, int y) {
+    if (x < 0 || x >= WIDTH || y < 0 || y >= HEIGHT) return;
+    radar_grid_mask[y * WIDTH + x] = true;
+    set_pixel(x, y, RADAR_GRID);
+}
+
+void draw_radar_grid_circle(int cx, int cy, int radius) {
+    int x = radius, y = 0, error = 1 - radius;
+    while (x >= y) {
+        mark_radar_grid_pixel(cx + x, cy + y); mark_radar_grid_pixel(cx + y, cy + x);
+        mark_radar_grid_pixel(cx - y, cy + x); mark_radar_grid_pixel(cx - x, cy + y);
+        mark_radar_grid_pixel(cx - x, cy - y); mark_radar_grid_pixel(cx - y, cy - x);
+        mark_radar_grid_pixel(cx + y, cy - x); mark_radar_grid_pixel(cx + x, cy - y);
+        ++y;
+        if (error < 0) error += 2 * y + 1;
+        else { --x; error += 2 * (y - x + 1); }
+    }
+}
+
 void draw_radar_sweep(int cx, int cy, int radius, float angle_degrees, Color color) {
     constexpr float pi = 3.14159265f;
     const float angle = (angle_degrees - 90.0f) * pi / 180.0f;
-    const int x = static_cast<int>(std::lround(cx + std::cos(angle) * radius));
-    const int y = static_cast<int>(std::lround(cy + std::sin(angle) * radius));
-    draw_line(cx, cy, x, y, color);
+    const int x1 = static_cast<int>(std::lround(cx + std::cos(angle) * radius));
+    const int y1 = static_cast<int>(std::lround(cy + std::sin(angle) * radius));
+
+    int x0 = cx, y0 = cy;
+    const int dx = std::abs(x1 - x0);
+    const int sx = x0 < x1 ? 1 : -1;
+    const int dy = -std::abs(y1 - y0);
+    const int sy = y0 < y1 ? 1 : -1;
+    int error = dx + dy;
+    for (;;) {
+        if (x0 >= 0 && x0 < WIDTH && y0 >= 0 && y0 < HEIGHT &&
+            !radar_grid_mask[y0 * WIDTH + x0])
+            set_pixel(x0, y0, color);
+        if (x0 == x1 && y0 == y1) break;
+        const int twice_error = 2 * error;
+        if (twice_error >= dy) { error += dy; x0 += sx; }
+        if (twice_error <= dx) { error += dx; y0 += sy; }
+    }
 }
 
 void draw_summary_frame(float sweep_angle) {
     clear();
     constexpr int cx = 30, cy = 31, radar_radius = 28;
-    // Paint the sweep underneath the radar grid so it cannot dim or replace
-    // pixels in the blue rings and crosshairs.
+
+    // Build the fixed radar geometry first and remember its exact pixels.
+    // The animated sweep then skips those pixels entirely so neither the blue
+    // grid nor the green sweep appears to blink or pass underneath the other.
+    std::memset(radar_grid_mask, 0, sizeof(radar_grid_mask));
+    draw_radar_grid_circle(cx, cy, radar_radius);
+    draw_radar_grid_circle(cx, cy, radar_radius / 2);
+    for (int y = cy - radar_radius; y <= cy + radar_radius; ++y) mark_radar_grid_pixel(cx, y);
+    for (int x = cx - radar_radius; x <= cx + radar_radius; ++x) mark_radar_grid_pixel(x, cy);
+
     draw_radar_sweep(cx, cy, radar_radius, sweep_angle - 12.0f, RADAR_SWEEP_DIM);
     draw_radar_sweep(cx, cy, radar_radius, sweep_angle - 6.0f, RADAR_SWEEP_MID);
     draw_radar_sweep(cx, cy, radar_radius, sweep_angle, GREEN);
-    draw_circle(cx, cy, radar_radius, RADAR_GRID);
-    draw_circle(cx, cy, radar_radius / 2, RADAR_GRID);
-    for (int y = cy - radar_radius; y <= cy + radar_radius; ++y) set_pixel(cx, y, RADAR_GRID);
-    for (int x = cx - radar_radius; x <= cx + radar_radius; ++x) set_pixel(x, cy, RADAR_GRID);
     set_pixel(cx, cy, GREEN); set_pixel(cx - 1, cy, GREEN); set_pixel(cx + 1, cy, GREEN);
     set_pixel(cx, cy - 1, GREEN); set_pixel(cx, cy + 1, GREEN);
     size_t count = 0;
