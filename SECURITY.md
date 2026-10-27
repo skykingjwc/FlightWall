@@ -10,7 +10,18 @@ The public Raspberry Pi Pico SDK example key is not a production trust key.
 Because its private half is publicly available, a signature made with that key
 does not establish who produced the firmware.
 
-FlightWall v1.6.0 and later authenticate automatic updates in two stages:
+FlightWall v1.6.0 and later authenticate automatic updates in two stages.
+
+The original v1.6.0 project key was not retained after that release. v1.6.1
+rotates to a replacement project key whose private half is backed up separately
+by the project owner. Existing v1.6.0 devices must receive v1.6.1 once through
+the physical USB recovery path before they can trust releases signed by the
+replacement key.
+
+The replacement public-key DER SHA-256 fingerprint is
+`ef23a599b2d730e03023ee7acf768094fc07e9528549af838f408a5246efa66d`.
+
+Automatic updates are authenticated in two stages:
 
 1. The firmware verifies `update/manifest.sig` against the embedded FlightWall
    secp256k1 public key.
