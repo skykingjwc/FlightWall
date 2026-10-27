@@ -16,6 +16,7 @@
 #include "pico/stdlib.h"
 
 #include "ota_server.h"
+#include "flightwall_settings.h"
 #include "update_public_key.h"
 
 #define UPDATE_HOST "raw.githubusercontent.com"
@@ -71,6 +72,8 @@ static uint8_t signature[SIGNATURE_CAPACITY];
 static uint32_t last_check_ms;
 static bool last_check_succeeded;
 static char update_status[48] = "NOT CHECKED";
+static volatile bool check_requested;
+static volatile bool install_requested;
 
 static uint32_t now_ms(void) {
     return to_ms_since_boot(get_absolute_time());
@@ -351,7 +354,7 @@ void flightwall_update_init(void) {
     tls_allocator.arg = tls_config;
 }
 
-bool flightwall_update_check_now(void) {
+static bool check_now(bool force_install) {
     last_check_ms = now_ms();
     last_check_succeeded = false;
     flightwall_update_init();
