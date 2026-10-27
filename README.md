@@ -7,10 +7,10 @@ aircraft screen, and an animated radar display.
 
 Current source release: **v1.6.5**
 
-Download the USB installer: [FlightWall-v1.6.5.uf2](release/FlightWall-v1.6.5.uf2).
-The USB image is built as a normal RP2350 image; automatic OTA images retain
-Try-Before-You-Buy rollback protection. Devices on v1.6.1 or later can receive
-v1.6.3 through the signed automatic-update feed.
+Download USB installers from the project's GitHub Releases page. Each version tag
+(v1.6.5, v1.6.6, and so on) builds and publishes a normal RP2350 USB/BOOTSEL UF2
+as a release asset. Automatic OTA images retain Try-Before-You-Buy rollback
+protection and are signed offline before the update feed is published.
 
 ## Hardware
 
@@ -85,6 +85,16 @@ cmake -S . -B build \
 
 See [SECURITY.md](SECURITY.md) and [update/README.md](update/README.md) before
 distributing signed or automatic updates.
+
+## Release process
+
+Normal pushes to `main` build test artifacts only. Pushing a semantic version tag
+such as `v1.6.5` runs the release workflow, verifies that the tag matches the
+firmware version in CMake, builds fresh USB and OTA images from the tagged source,
+creates the official GitHub Release, and attaches the USB UF2.
+
+The OTA image is retained as an Actions artifact for the separate offline signing
+step. The private update-signing key is intentionally never stored in GitHub.
 
 ## Documentation
 
