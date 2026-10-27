@@ -409,9 +409,36 @@ static bool check_now(bool force_install) {
     return true;
 }
 
+bool flightwall_update_check_now(void) {
+    return check_now(false);
+}
+
 bool flightwall_update_check_due(void) {
     uint32_t interval = last_check_succeeded ? UPDATE_INTERVAL_MS : UPDATE_RETRY_MS;
     return now_ms() - last_check_ms >= interval && flightwall_update_check_now();
+}
+
+void flightwall_update_request_check(void) {
+    check_requested = true;
+    snprintf(update_status, sizeof(update_status), "CHECK REQUESTED");
+}
+
+void flightwall_update_request_install(void) {
+    install_requested = true;
+    snprintf(update_status, sizeof(update_status), "INSTALL REQUESTED");
+}
+
+bool flightwall_update_process_requests(void) {
+    if (install_requested) {
+        install_requested = false;
+        check_requested = false;
+        return check_now(true);
+    }
+    if (check_requested) {
+        check_requested = false;
+        return check_now(false);
+    }
+    return false;
 }
 
 const char *flightwall_update_status(void) {
