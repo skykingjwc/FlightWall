@@ -815,11 +815,9 @@ int main() {
         show_summary();
         ota_checkpoint();
 
-        // Force a clean static-frame handoff after the animated radar screen.
-        // This prevents any stale sweep/list data from surviving into the next
-        // aircraft-list frame if the HUB75 driver misses a boundary update.
+        // Clear only the backing framebuffer after the animated radar screen.
+        // Do not present the blank frame: the physical panels keep showing the
+        // last radar frame until the next aircraft-list frame is ready.
         clear();
-        present();
-        sleep_ms(25);
     }
 }
