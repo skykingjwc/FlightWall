@@ -96,6 +96,16 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
       <label for="displaytime">Screen timing (3-30 seconds)</label><br>
       <input id="displaytime" name="displaytime" type="number" min="3" max="30" value="<!--#timing-->"><br>
       <small>Controls how long each normal screen and aircraft-list page remains visible.</small><br><br>
+
+      <label for="sweepbrightness">Radar sweep leading-edge brightness: <output id="sweepbrightnessvalue"><!--#swpbrt--></output>%</label><br>
+      <input id="sweepbrightness" name="sweepbrightness" type="range" min="10" max="100" step="1"
+             value="<!--#swpbrt-->" oninput="sweepbrightnessvalue.value=this.value"><br><br>
+
+      <label for="sweeptail">Radar sweep tail length: <output id="sweeptailvalue"><!--#swptail--></output>&deg;</label><br>
+      <input id="sweeptail" name="sweeptail" type="range" min="4" max="30" step="1"
+             value="<!--#swptail-->" oninput="sweeptailvalue.value=this.value"><br>
+      <small>Adjusts the relative brightness of the sweep head and the angular length of its fading tail.</small><br><br>
+
       <label for="watchlist">Watched aircraft (callsign, tail number, or ICAO hex)</label><br>
       <textarea id="watchlist" name="watchlist" placeholder="N6917D, N52267"><!--#watch--></textarea><br>
       <small>Separate entries with commas, spaces, or new lines. Watched aircraft are pinned to the top and shown in yellow.</small><br><br>
