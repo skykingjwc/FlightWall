@@ -476,6 +476,11 @@ bool flightwall_ota_update_ready(void) {
            time_us_64() >= ota_state->ready_after_us;
 }
 
+bool flightwall_ota_transfer_active(void) {
+    return ota_state &&
+           (ota_state->client_pcb != NULL || ota_state->http_active);
+}
+
 void flightwall_ota_reboot_to_update(void) {
     if (!flightwall_ota_update_ready()) return;
     cyw43_arch_disable_sta_mode();
