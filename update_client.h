@@ -6,7 +6,10 @@
 extern "C" {
 #endif
 
+typedef void (*flightwall_update_download_callback_t)(const char *version);
+
 void flightwall_update_init(void);
+void flightwall_update_set_download_callback(flightwall_update_download_callback_t callback);
 
 // Checks the signed GitHub update feed immediately. Returns true only when a
 // newer image was downloaded, authenticated, and staged in the inactive slot.
