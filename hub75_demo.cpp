@@ -209,6 +209,16 @@ extern "C" void show_wifi_status(const char *line1, const char *line2, const cha
     present();
 }
 
+extern "C" void show_update_download(const char *version) {
+    clear();
+    centered_text(18, "DOWNLOADING UPDATE", AMBER);
+    char line[32];
+    std::snprintf(line, sizeof(line), "VERSION %s", version ? version : "");
+    centered_text(31, line, CYAN);
+    centered_text(44, "DO NOT POWER OFF", GREEN);
+    present();
+}
+
 void ota_checkpoint() {
     uint32_t generation = flightwall_settings_generation();
     if (generation != applied_settings_generation) {
@@ -757,6 +767,7 @@ int main() {
     // normal queued update path. This isolates the ADS-B TLS connection from
     // any preceding GitHub TLS activity.
     flightwall_update_init();
+    flightwall_update_set_download_callback(show_update_download);
 
     flightwall_aircraft_init();
     show_wifi_status("FETCHING AIRCRAFT", "DATA FROM ADSB.FI", "PLEASE WAIT");
