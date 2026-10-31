@@ -19,9 +19,10 @@
 #include "flightwall_settings.h"
 #include "update_public_key.h"
 
-#define UPDATE_HOST "api.github.com"
+#define UPDATE_API_HOST "api.github.com"
+#define UPDATE_RAW_HOST "raw.githubusercontent.com"
 #define UPDATE_PORT 443
-#define FEED_API_PATH "/repos/skykingjwc/FlightWall/contents/update/feed.json?ref=main"
+#define FEED_RAW_PATH "/skykingjwc/FlightWall/main/update/feed.json"
 #define BLOB_API_PREFIX "/repos/skykingjwc/FlightWall/git/blobs/"
 #define SMALL_RESPONSE_CAPACITY 4096u
 #define SIGNATURE_CAPACITY 96u
@@ -69,6 +70,7 @@ typedef struct {
 
 static struct altcp_tls_config *tls_config;
 static altcp_allocator_t tls_allocator;
+static const char *tls_sni_host = UPDATE_API_HOST;
 // lwIP retains a pointer to these settings for the lifetime of each request,
 // so this must not be a stack-local object in start_get(). Requests are
 // serialized by flightwall_update_check_now().
@@ -104,7 +106,7 @@ static struct altcp_pcb *tls_alloc_with_sni(void *arg, u8_t ip_type) {
     struct altcp_pcb *pcb = altcp_tls_alloc(arg, ip_type);
     if (!pcb) return NULL;
     mbedtls_ssl_context *ssl = (mbedtls_ssl_context *)altcp_tls_context(pcb);
-    if (!ssl || mbedtls_ssl_set_hostname(ssl, UPDATE_HOST) != 0) {
+    if (!ssl || !tls_sni_host || mbedtls_ssl_set_hostname(ssl, tls_sni_host) != 0) {
         altcp_abort(pcb);
         return NULL;
     }
@@ -320,13 +322,14 @@ static bool decode_chunked(uint8_t *data, size_t *length, size_t capacity) {
     return true;
 }
 
-static bool start_get(const char *path) {
+static bool start_get(const char *host, const char *path) {
+    tls_sni_host = host;
     memset(&http_connection, 0, sizeof(http_connection));
     http_connection.altcp_allocator = &tls_allocator;
     http_connection.result_fn = request_finished;
     http_connection.headers_done_fn = headers_received;
     cyw43_arch_lwip_begin();
-    err_t rc = httpc_get_file_dns(UPDATE_HOST, UPDATE_PORT, path, &http_connection,
+    err_t rc = httpc_get_file_dns(host, UPDATE_PORT, path, &http_connection,
                                   receive_body, NULL, NULL);
     cyw43_arch_lwip_end();
     return rc == ERR_OK;
@@ -339,7 +342,7 @@ static bool fetch_small(const char *path, uint8_t *output, size_t capacity,
     request.buffer = output;
     request.capacity = capacity;
     request.result = HTTPC_RESULT_ERR_UNKNOWN;
-    if (!start_get(path) || !wait_for_request(UPDATE_TIMEOUT_MS)) return false;
+    if (!start_get(UPDATE_API_HOST, path) || !wait_for_request(UPDATE_TIMEOUT_MS)) return false;
     size_t length = request.received;
     if (!request.content_length_known && !decode_chunked(output, &length, capacity)) return false;
     *output_length = length;
@@ -546,8 +549,8 @@ static bool start_feed_check(bool force_install) {
     request.capacity = SMALL_RESPONSE_CAPACITY;
     request.result = HTTPC_RESULT_ERR_UNKNOWN;
 
-    snprintf(update_status, sizeof(update_status), "CHECKING GITHUB API");
-    if (!start_get(FEED_API_PATH)) {
+    snprintf(update_status, sizeof(update_status), "CHECKING GITHUB RAW");
+    if (!start_get(UPDATE_RAW_HOST, FEED_RAW_PATH)) {
         snprintf(update_status, sizeof(update_status), "UPDATE FEED START FAILED");
         update_tls_end();
         return false;
@@ -601,7 +604,7 @@ static bool start_firmware_download(const update_manifest_t *manifest) {
     mbedtls_sha256_init(&request.sha);
     request.sha_active = mbedtls_sha256_starts(&request.sha, 0) == 0;
 
-    if (!request.sha_active || !start_get(blob_path)) {
+    if (!request.sha_active || !start_get(UPDATE_API_HOST, blob_path)) {
         if (request.sha_active) {
             mbedtls_sha256_free(&request.sha);
             request.sha_active = false;
@@ -633,20 +636,18 @@ static bool process_feed_result(void) {
         return false;
     }
 
-    size_t feed_length = 0;
-    if (!decode_base64_json_field(small_response, response_length, "content",
-                                  feed_bytes, SMALL_RESPONSE_CAPACITY, &feed_length) ||
-        feed_length == 0) {
-        snprintf(update_status, sizeof(update_status), "UPDATE FEED DECODE FAILED");
+    const size_t feed_length = response_length;
+    if (feed_length == 0) {
+        snprintf(update_status, sizeof(update_status), "EMPTY UPDATE FEED");
         finish_update_session();
         return false;
     }
 
     char manifest_b64[3072];
     char signature_hex[2 * SIGNATURE_CAPACITY + 1];
-    if (!json_string((const char *)feed_bytes, feed_length, "manifest_b64",
+    if (!json_string((const char *)small_response, feed_length, "manifest_b64",
                      manifest_b64, sizeof(manifest_b64)) ||
-        !json_string((const char *)feed_bytes, feed_length, "signature_hex",
+        !json_string((const char *)small_response, feed_length, "signature_hex",
                      signature_hex, sizeof(signature_hex))) {
         snprintf(update_status, sizeof(update_status), "BAD UPDATE FEED");
         finish_update_session();
