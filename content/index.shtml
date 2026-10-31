@@ -132,7 +132,7 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
     <h2>Firmware update</h2>
     <div class="status">
       <span class="label">Installed</span><span>v<!--#version--></span>
-      <span class="label">Update status</span><span><!--#update--></span>
+      <span class="label">Update status</span><span id="autoUpdateStatus"><!--#update--></span>
     </div>
     <p><strong>Automatic updating is temporarily disabled.</strong> In this diagnostic build, the Check for update button only tests HTTPS connectivity to api.github.com using the same ECDSA-only TLS profile that keeps ADS-B working.</p>
 
@@ -142,13 +142,7 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
       <input type="submit" value="Save update preference">
     </form>
 
-    <form action="/check_update.cgi" method="get">
-      <input type="submit" value="Test GitHub API HTTPS">
-    </form>
-
-    <form action="/install_update.cgi" method="get" onsubmit="return confirm('Install the newest signed FlightWall update if one is available?');">
-      <input type="submit" value="Test GitHub API HTTPS (install disabled)">
-    </form>
+    <p><button id="githubTest" type="button">Test GitHub API HTTPS</button></p>
 
     <p><small>A successful test will show GITHUB API HTTP followed by a status code. Any real HTTP status proves the TLS handshake succeeded; no firmware is installed in this diagnostic build.</small></p>
 
@@ -163,6 +157,55 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
   </section>
 </main>
 <script>
+const githubTest = document.getElementById('githubTest');
+const autoUpdateStatus = document.getElementById('autoUpdateStatus');
+
+function extractUpdateStatus(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const element = doc.getElementById('autoUpdateStatus');
+  return element ? element.textContent.trim() : '';
+}
+
+async function pollGitHubTestResult() {
+  for (let attempt = 0; attempt < 70; ++attempt) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    try {
+      const response = await fetch('/index.shtml?status=' + Date.now(), { cache: 'no-store' });
+      if (!response.ok) continue;
+      const result = extractUpdateStatus(await response.text());
+      if (!result) continue;
+
+      autoUpdateStatus.textContent = result;
+      if (result !== 'CHECK REQUESTED' && result !== 'TESTING GITHUB API') {
+        githubTest.disabled = false;
+        return;
+      }
+    } catch (error) {
+      // The main loop may be busy in the synchronous HTTPS diagnostic.
+    }
+  }
+
+  autoUpdateStatus.textContent = 'TEST RESULT TIMED OUT';
+  githubTest.disabled = false;
+}
+
+githubTest.addEventListener('click', async () => {
+  githubTest.disabled = true;
+  autoUpdateStatus.textContent = 'CHECK REQUESTED';
+
+  try {
+    await fetch('/check_update.cgi?ts=' + Date.now(), {
+      cache: 'no-store',
+      redirect: 'follow'
+    });
+  } catch (error) {
+    // The Pico may be busy before it can finish the CGI response; polling
+    // below is authoritative.
+  }
+
+  pollGitHubTestResult();
+});
+
 const button = document.getElementById('install');
 const picker = document.getElementById('firmware');
 const progress = document.getElementById('progress');
