@@ -258,6 +258,8 @@ static err_t headers_received(httpc_state_t *connection, void *arg, struct pbuf 
     return ERR_OK;
 }
 
+static const char *find_json_value(const char *json, size_t length, const char *key);
+
 static bool wait_for_request(uint32_t timeout_ms) {
     uint32_t started = now_ms();
     while (!request.done && now_ms() - started < timeout_ms) sleep_ms(20);
@@ -330,6 +332,59 @@ static bool fetch_small(const char *path, uint8_t *output, size_t capacity,
     if (!request.content_length_known && !decode_chunked(output, &length, capacity)) return false;
     *output_length = length;
     return true;
+}
+
+static bool decode_base64_json_field(const uint8_t *json, size_t length, const char *key,
+                                     uint8_t *output, size_t capacity, size_t *output_length) {
+    const char *p = find_json_value((const char *)json, length, key);
+    const char *limit = (const char *)json + length;
+    if (!p || p >= limit || *p++ != '"') return false;
+
+    char quartet[4];
+    uint8_t quartet_count = 0;
+    size_t used = 0;
+    bool escape = false;
+
+    while (p < limit) {
+        unsigned char ch = (unsigned char)*p++;
+        if (escape) {
+            escape = false;
+            if (ch == 'n' || ch == 'r' || ch == 't') continue;
+            return false;
+        }
+        if (ch == '\\') {
+            escape = true;
+            continue;
+        }
+        if (ch == '"') break;
+        if (isspace(ch)) continue;
+        if (base64_value(ch) == -1) return false;
+        quartet[quartet_count++] = (char)ch;
+        if (quartet_count == 4) {
+            uint8_t decoded[3];
+            size_t decoded_length = 0;
+            if (!decode_base64_quartet(quartet, decoded, &decoded_length) ||
+                used + decoded_length > capacity) {
+                return false;
+            }
+            memcpy(output + used, decoded, decoded_length);
+            used += decoded_length;
+            quartet_count = 0;
+        }
+    }
+
+    if (quartet_count != 0) return false;
+    *output_length = used;
+    return true;
+}
+
+static bool fetch_api_file(const char *path, uint8_t *output, size_t capacity,
+                           size_t *output_length) {
+    size_t response_length = 0;
+    if (!fetch_small(path, small_response, SMALL_RESPONSE_CAPACITY, &response_length))
+        return false;
+    return decode_base64_json_field(small_response, response_length, "content",
+                                    output, capacity, output_length);
 }
 
 static bool verify_manifest_signature(const uint8_t *manifest, size_t manifest_length,
@@ -410,21 +465,22 @@ static bool parse_manifest(const uint8_t *data, size_t length, update_manifest_t
     uint32_t schema = 0;
     memset(manifest, 0, sizeof(*manifest));
     const char *json = (const char *)data;
-    if (!json_u32(json, length, "schema", &schema) || schema != 1 ||
+    if (!json_u32(json, length, "schema", &schema) || schema != 2 ||
         !json_u32(json, length, "build", &manifest->build) ||
         !json_u32(json, length, "size", &manifest->size) ||
         !json_string(json, length, "version", manifest->version, sizeof(manifest->version)) ||
-        !json_string(json, length, "path", manifest->path, sizeof(manifest->path)) ||
+        !json_string(json, length, "blob_sha", manifest->blob_sha, sizeof(manifest->blob_sha)) ||
         !json_string(json, length, "sha256", sha_text, sizeof(sha_text)) ||
         !hex_digest(sha_text, manifest->sha256)) {
         return false;
     }
+    if (strlen(manifest->blob_sha) != 40) return false;
+    for (size_t i = 0; i < 40; ++i)
+        if (!isxdigit((unsigned char)manifest->blob_sha[i])) return false;
+
     return manifest->build > 0 && manifest->size >= 2048u &&
            manifest->size <= MAX_UPDATE_SIZE && (manifest->size % 2048u) == 0 &&
-           manifest->version[0] &&
-           strncmp(manifest->path, REPOSITORY_PATH_PREFIX,
-                   strlen(REPOSITORY_PATH_PREFIX)) == 0 &&
-           strstr(manifest->path, "..") == NULL;
+           manifest->version[0];
 }
 
 static bool digest_equal(const uint8_t left[32], const uint8_t right[32]) {
@@ -434,6 +490,12 @@ static bool digest_equal(const uint8_t left[32], const uint8_t right[32]) {
 }
 
 static bool download_update(const update_manifest_t *manifest) {
+    char blob_path[160];
+    if (snprintf(blob_path, sizeof(blob_path), "%s%s", BLOB_API_PREFIX,
+                 manifest->blob_sha) <= 0) {
+        return false;
+    }
+
     if (!flightwall_ota_http_begin(manifest->size)) return false;
     memset(&request, 0, sizeof(request));
     request.kind = REQUEST_FIRMWARE;
@@ -441,8 +503,10 @@ static bool download_update(const update_manifest_t *manifest) {
     request.result = HTTPC_RESULT_ERR_UNKNOWN;
     mbedtls_sha256_init(&request.sha);
     request.sha_active = mbedtls_sha256_starts(&request.sha, 0) == 0;
-    if (!request.sha_active || !start_get(manifest->path) ||
-        !wait_for_request(UPDATE_TIMEOUT_MS) || request.received != request.expected) {
+    if (!request.sha_active || !start_get(blob_path) ||
+        !wait_for_request(UPDATE_TIMEOUT_MS) ||
+        !request.blob_content_found || !request.blob_content_done ||
+        request.decoded_received != request.expected) {
         if (request.sha_active) mbedtls_sha256_free(&request.sha);
         flightwall_ota_http_abort();
         return false;
@@ -483,30 +547,6 @@ static void update_tls_end(void) {
     tls_allocator.arg = NULL;
 }
 
-static bool github_api_tls_probe(void) {
-    flightwall_update_init();
-    if (!update_tls_begin()) {
-        snprintf(update_status, sizeof(update_status), "TLS INIT FAILED");
-        return false;
-    }
-
-    memset(&request, 0, sizeof(request));
-    request.kind = REQUEST_SMALL;
-    request.buffer = small_response;
-    request.capacity = SMALL_RESPONSE_CAPACITY;
-    request.result = HTTPC_RESULT_ERR_UNKNOWN;
-
-    snprintf(update_status, sizeof(update_status), "TESTING GITHUB API");
-    if (!start_get(API_PROBE_PATH) || !wait_for_http_response(UPDATE_TIMEOUT_MS)) {
-        snprintf(update_status, sizeof(update_status), "GITHUB API TLS FAILED");
-        return false;
-    }
-
-    snprintf(update_status, sizeof(update_status), "GITHUB API HTTP %lu",
-             (unsigned long)request.http_status);
-    return true;
-}
-
 static bool check_now_inner(bool force_install) {
     last_check_ms = now_ms();
     last_check_succeeded = false;
@@ -518,25 +558,25 @@ static bool check_now_inner(bool force_install) {
 
     size_t manifest_length = 0;
     size_t signature_length = 0;
-    snprintf(update_status, sizeof(update_status), "CHECKING GITHUB");
-    if (!fetch_small(MANIFEST_PATH, small_response, SMALL_RESPONSE_CAPACITY,
-                     &manifest_length) || manifest_length == 0) {
+    snprintf(update_status, sizeof(update_status), "CHECKING GITHUB API");
+    if (!fetch_api_file(MANIFEST_API_PATH, manifest_bytes, sizeof(manifest_bytes),
+                        &manifest_length) || manifest_length == 0) {
         snprintf(update_status, sizeof(update_status), "MANIFEST FETCH FAILED");
         return false;
     }
-    if (!fetch_small(SIGNATURE_PATH, signature, SIGNATURE_CAPACITY,
-                     &signature_length) || signature_length == 0) {
+    if (!fetch_api_file(SIGNATURE_API_PATH, signature, SIGNATURE_CAPACITY,
+                        &signature_length) || signature_length == 0) {
         snprintf(update_status, sizeof(update_status), "SIGNATURE FETCH FAILED");
         return false;
     }
-    if (!verify_manifest_signature(small_response, manifest_length,
+    if (!verify_manifest_signature(manifest_bytes, manifest_length,
                                    signature, signature_length)) {
         snprintf(update_status, sizeof(update_status), "BAD UPDATE SIGNATURE");
         return false;
     }
 
     update_manifest_t manifest;
-    if (!parse_manifest(small_response, manifest_length, &manifest)) {
+    if (!parse_manifest(manifest_bytes, manifest_length, &manifest)) {
         snprintf(update_status, sizeof(update_status), "BAD UPDATE MANIFEST");
         return false;
     }
@@ -563,8 +603,7 @@ static bool check_now_inner(bool force_install) {
 }
 
 static bool check_now(bool force_install) {
-    (void)force_install;
-    bool result = github_api_tls_probe();
+    bool result = check_now_inner(force_install);
     update_tls_end();
     return result;
 }
