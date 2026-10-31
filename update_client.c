@@ -19,8 +19,9 @@
 #include "flightwall_settings.h"
 #include "update_public_key.h"
 
-#define UPDATE_HOST "raw.githubusercontent.com"
+#define UPDATE_HOST "api.github.com"
 #define UPDATE_PORT 443
+#define API_PROBE_PATH "/zen"
 #define MANIFEST_PATH "/skykingjwc/FlightWall/main/update/manifest.json"
 #define SIGNATURE_PATH "/skykingjwc/FlightWall/main/update/manifest.sig"
 #define REPOSITORY_PATH_PREFIX "/skykingjwc/FlightWall/"
@@ -155,6 +156,13 @@ static bool wait_for_request(uint32_t timeout_ms) {
     while (!request.done && now_ms() - started < timeout_ms) sleep_ms(20);
     return request.done && !request.failed &&
            request.result == HTTPC_RESULT_OK && request.http_status == 200;
+}
+
+static bool wait_for_http_response(uint32_t timeout_ms) {
+    uint32_t started = now_ms();
+    while (!request.done && now_ms() - started < timeout_ms) sleep_ms(20);
+    return request.done && !request.failed &&
+           request.result == HTTPC_RESULT_OK && request.http_status != 0;
 }
 
 static bool decode_chunked(uint8_t *data, size_t *length, size_t capacity) {
@@ -368,6 +376,30 @@ static void update_tls_end(void) {
     tls_allocator.arg = NULL;
 }
 
+static bool github_api_tls_probe(void) {
+    flightwall_update_init();
+    if (!update_tls_begin()) {
+        snprintf(update_status, sizeof(update_status), "TLS INIT FAILED");
+        return false;
+    }
+
+    memset(&request, 0, sizeof(request));
+    request.kind = REQUEST_SMALL;
+    request.buffer = small_response;
+    request.capacity = SMALL_RESPONSE_CAPACITY;
+    request.result = HTTPC_RESULT_ERR_UNKNOWN;
+
+    snprintf(update_status, sizeof(update_status), "TESTING GITHUB API");
+    if (!start_get(API_PROBE_PATH) || !wait_for_http_response(UPDATE_TIMEOUT_MS)) {
+        snprintf(update_status, sizeof(update_status), "GITHUB API TLS FAILED");
+        return false;
+    }
+
+    snprintf(update_status, sizeof(update_status), "GITHUB API HTTP %lu",
+             (unsigned long)request.http_status);
+    return true;
+}
+
 static bool check_now_inner(bool force_install) {
     last_check_ms = now_ms();
     last_check_succeeded = false;
@@ -424,7 +456,8 @@ static bool check_now_inner(bool force_install) {
 }
 
 static bool check_now(bool force_install) {
-    bool result = check_now_inner(force_install);
+    (void)force_install;
+    bool result = github_api_tls_probe();
     update_tls_end();
     return result;
 }
