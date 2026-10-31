@@ -778,6 +778,12 @@ int main() {
     flightwall_update_request_check();
 
     while (true) {
+        if (flightwall_update_installing()) {
+            ota_checkpoint();
+            sleep_ms(100);
+            continue;
+        }
+
         const flightwall_settings_t *current_settings = flightwall_settings_get();
         if (flightwall_aircraft_refresh_due(current_settings->refresh_seconds))
             flightwall_aircraft_refresh();
