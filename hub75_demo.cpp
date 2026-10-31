@@ -762,6 +762,11 @@ int main() {
     show_wifi_status("FETCHING AIRCRAFT", "DATA FROM ADSB.FI", "PLEASE WAIT");
     flightwall_aircraft_refresh();
 
+    // Queue the first signed GitHub update check only after ADS-B has completed
+    // its initial connection. The updater's RSA-capable TLS context is created
+    // on demand and freed after the check so it does not remain beside ADS-B.
+    flightwall_update_request_check();
+
     while (true) {
         const flightwall_settings_t *current_settings = flightwall_settings_get();
         if (flightwall_aircraft_refresh_due(current_settings->refresh_seconds))
