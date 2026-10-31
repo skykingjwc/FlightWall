@@ -273,86 +273,105 @@ bool callsign_prefix(const char *id, const char *prefix) {
 }
 
 void draw_delta_mark(int x, int y) {
-    // Delta widget: large blue upper chevron with a red lower chevron.
-    // Keep the gap tight so the mark reads as one symbol on the low-res panel.
-    for (int row = 0; row < 10; ++row) {
-        const int half = row;
-        for (int px = 11 - half; px <= 11 + half; ++px) {
-            const int inset = row < 5 ? 0 : (row - 4);
-            if (px < 11 - inset || px > 11 + inset)
-                set_pixel(x + px, y + row, BLUE);
+    // Low-resolution interpretation of the Delta widget: a broad navy upper
+    // chevron over a red lower wedge, with only a one-pixel visual break.
+    for (int row = 0; row < 13; ++row) {
+        const int outer = row;
+        const int inner = row < 6 ? -1 : row - 6;
+        for (int px = 14 - outer; px <= 14 + outer; ++px) {
+            if (inner < 0 || px < 14 - inner || px > 14 + inner)
+                set_pixel(x + px, y + row, Color{18, 35, 145});
         }
     }
-    for (int row = 0; row < 5; ++row) {
-        const int half = 9 - row * 2;
-        for (int px = 11 - half; px <= 11 + half; ++px)
-            set_pixel(x + px, y + 11 + row, RED);
+    for (int row = 0; row < 6; ++row) {
+        const int half = 12 - row * 2;
+        for (int px = 14 - half; px <= 14 + half; ++px)
+            set_pixel(x + px, y + 14 + row, RED);
     }
 }
 
 void draw_united_mark(int x, int y) {
-    const int cx = x + 7, cy = y + 6;
-    draw_circle(cx, cy, 6, BLUE);
-    draw_line(cx - 5, cy, cx + 5, cy, BLUE);
-    draw_line(cx, cy - 5, cx, cy + 5, BLUE);
-    draw_line(cx - 3, cy - 4, cx - 3, cy + 4, BLUE);
-    draw_line(cx + 3, cy - 4, cx + 3, cy + 4, BLUE);
+    // Enlarge the globe substantially and simplify the latitude/longitude grid.
+    const int cx = x + 10, cy = y + 10;
+    draw_circle(cx, cy, 9, BLUE);
+    draw_line(cx - 8, cy, cx + 8, cy, BLUE);
+    draw_line(cx - 7, cy - 4, cx + 7, cy - 4, BLUE);
+    draw_line(cx - 7, cy + 4, cx + 7, cy + 4, BLUE);
+    draw_line(cx, cy - 8, cx, cy + 8, BLUE);
+    draw_line(cx - 4, cy - 7, cx - 4, cy + 7, BLUE);
+    draw_line(cx + 4, cy - 7, cx + 4, cy + 7, BLUE);
+    draw_line(cx - 7, cy - 7, cx + 7, cy + 7, CYAN);
+    draw_line(cx - 7, cy + 7, cx + 7, cy - 7, CYAN);
 }
 
 void draw_american_mark(int x, int y) {
-    for (int i = 0; i < 2; ++i) {
-        draw_line(x + 1 + i, y + 10, x + 10 + i, y + 1, BLUE);
-        draw_line(x + 7 + i, y + 10, x + 16 + i, y + 1, WHITE);
-        draw_line(x + 13 + i, y + 10, x + 22 + i, y + 2, RED);
+    // Broad red/white/blue feather strokes modeled after the current eagle mark.
+    for (int i = 0; i < 3; ++i) {
+        draw_line(x + 1 + i, y + 18, x + 15 + i, y + 2, BLUE);
+        draw_line(x + 8 + i, y + 18, x + 22 + i, y + 2, WHITE);
+        draw_line(x + 15 + i, y + 18, x + 29 + i, y + 4, RED);
     }
 }
 
 void draw_ups_mark(int x, int y) {
-    draw_line(x + 2, y + 1, x + 12, y + 1, AMBER);
-    draw_line(x + 2, y + 1, x + 2, y + 7, AMBER);
-    draw_line(x + 12, y + 1, x + 12, y + 7, AMBER);
-    draw_line(x + 2, y + 7, x + 7, y + 11, AMBER);
-    draw_line(x + 12, y + 7, x + 7, y + 11, AMBER);
+    // Large shield outline with the familiar UPS lettering centered inside.
+    draw_line(x + 3, y + 1, x + 19, y + 1, AMBER);
+    draw_line(x + 2, y + 2, x + 2, y + 12, AMBER);
+    draw_line(x + 20, y + 2, x + 20, y + 12, AMBER);
+    draw_line(x + 2, y + 12, x + 11, y + 20, AMBER);
+    draw_line(x + 20, y + 12, x + 11, y + 20, AMBER);
+    draw_text(x + 4, y + 6, "UPS", AMBER);
 }
 
 void draw_fedex_mark(int x, int y) {
-    draw_text(x, y + 2, "FED", PURPLE);
-    draw_text(x + text_width("FED"), y + 2, "EX", ORANGE);
+    // FedEx is fundamentally a wordmark, so use the full available width.
+    draw_text(x, y + 6, "FED", PURPLE);
+    draw_text(x + text_width("FED"), y + 6, "EX", ORANGE);
+    draw_line(x + 1, y + 16, x + 30, y + 16, WHITE);
 }
 
 void draw_skywest_mark(int x, int y) {
-    draw_text(x, y + 2, "SKY", CYAN);
-    draw_text(x + text_width("SKY") + 2, y + 2, "W", WHITE);
+    // The SkyWest logo is also primarily a wordmark; spell it out rather than
+    // using the old abbreviated SKY/W treatment.
+    draw_text(x, y + 6, "SKY", BLUE);
+    draw_text(x + text_width("SKY"), y + 6, "WEST", CYAN);
+    draw_line(x + 2, y + 16, x + 40, y + 16, BLUE);
 }
 
 void draw_republic_mark(int x, int y) {
-    const int cx = x + 7, cy = y + 6;
-    set_pixel(cx, y, RED);
-    draw_line(cx, y, cx + 2, cy - 2, RED);
-    draw_line(cx + 2, cy - 2, x + 13, cy - 2, RED);
-    draw_line(x + 13, cy - 2, cx + 3, cy + 1, RED);
-    draw_line(cx + 3, cy + 1, cx + 5, y + 11, RED);
-    draw_line(cx + 5, y + 11, cx, cy + 3, RED);
-    draw_line(cx, cy + 3, x + 2, y + 11, RED);
-    draw_line(x + 2, y + 11, cx - 3, cy + 1, RED);
-    draw_line(cx - 3, cy + 1, x + 1, cy - 2, RED);
-    draw_line(x + 1, cy - 2, cx - 2, cy - 2, RED);
-    draw_line(cx - 2, cy - 2, cx, y, RED);
+    // Simplified large star/wing mark; the larger footprint reads better than
+    // the previous tiny star on a 64-pixel-high display.
+    const int cx = x + 11, cy = y + 10;
+    draw_line(cx, y + 1, cx + 3, cy - 3, RED);
+    draw_line(cx + 3, cy - 3, x + 21, cy - 3, RED);
+    draw_line(x + 21, cy - 3, cx + 5, cy + 1, RED);
+    draw_line(cx + 5, cy + 1, cx + 8, y + 19, RED);
+    draw_line(cx + 8, y + 19, cx, cy + 5, RED);
+    draw_line(cx, cy + 5, x + 3, y + 19, RED);
+    draw_line(x + 3, y + 19, cx - 5, cy + 1, RED);
+    draw_line(cx - 5, cy + 1, x + 1, cy - 3, RED);
+    draw_line(x + 1, cy - 3, cx - 3, cy - 3, RED);
+    draw_line(cx - 3, cy - 3, cx, y + 1, RED);
 }
 
 void draw_frontier_mark(int x, int y) {
-    draw_text(x, y + 2, "F9", GREEN);
+    // Frontier's compact F9 mark survives the matrix better than the full word.
+    draw_text(x + 5, y + 6, "F9", GREEN);
+    draw_line(x + 2, y + 3, x + 2, y + 18, GREEN);
+    draw_line(x + 2, y + 3, x + 25, y + 3, GREEN);
+    draw_line(x + 2, y + 10, x + 18, y + 10, GREEN);
 }
 
 bool draw_airline_logo(int x, int y, const char *id) {
-    if (callsign_prefix(id, "DAL")) draw_delta_mark(x + 12, y + 1);
-    else if (callsign_prefix(id, "UAL")) draw_united_mark(x + 18, y + 2);
-    else if (callsign_prefix(id, "AAL")) draw_american_mark(x + 10, y + 2);
-    else if (callsign_prefix(id, "UPS")) draw_ups_mark(x + 19, y + 3);
-    else if (callsign_prefix(id, "FDX")) draw_fedex_mark(x + 7, y + 5);
-    else if (callsign_prefix(id, "SKW")) draw_skywest_mark(x + 7, y + 5);
-    else if (callsign_prefix(id, "RPA")) draw_republic_mark(x + 19, y + 3);
-    else if (callsign_prefix(id, "FFT")) draw_frontier_mark(x + 18, y + 5);
+    // All marks are laid out for the same roughly 50x22 pixel identity box.
+    if (callsign_prefix(id, "DAL")) draw_delta_mark(x + 10, y);
+    else if (callsign_prefix(id, "UAL")) draw_united_mark(x + 15, y);
+    else if (callsign_prefix(id, "AAL")) draw_american_mark(x + 8, y);
+    else if (callsign_prefix(id, "UPS")) draw_ups_mark(x + 14, y);
+    else if (callsign_prefix(id, "FDX")) draw_fedex_mark(x + 9, y + 1);
+    else if (callsign_prefix(id, "SKW")) draw_skywest_mark(x + 4, y + 1);
+    else if (callsign_prefix(id, "RPA")) draw_republic_mark(x + 14, y);
+    else if (callsign_prefix(id, "FFT")) draw_frontier_mark(x + 11, y);
     else return false;
     return true;
 }
