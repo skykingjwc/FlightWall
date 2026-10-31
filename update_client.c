@@ -21,11 +21,10 @@
 
 #define UPDATE_HOST "api.github.com"
 #define UPDATE_PORT 443
-#define API_PROBE_PATH "/zen"
-#define MANIFEST_PATH "/skykingjwc/FlightWall/main/update/manifest.json"
-#define SIGNATURE_PATH "/skykingjwc/FlightWall/main/update/manifest.sig"
-#define REPOSITORY_PATH_PREFIX "/skykingjwc/FlightWall/"
-#define SMALL_RESPONSE_CAPACITY 2048u
+#define MANIFEST_API_PATH "/repos/skykingjwc/FlightWall/contents/update/manifest.json?ref=main"
+#define SIGNATURE_API_PATH "/repos/skykingjwc/FlightWall/contents/update/manifest.sig?ref=main"
+#define BLOB_API_PREFIX "/repos/skykingjwc/FlightWall/git/blobs/"
+#define SMALL_RESPONSE_CAPACITY 4096u
 #define SIGNATURE_CAPACITY 96u
 #define UPDATE_TIMEOUT_MS 60000u
 #define UPDATE_INTERVAL_MS (6u * 60u * 60u * 1000u)
@@ -51,11 +50,19 @@ typedef struct {
     volatile uint32_t http_status;
     mbedtls_sha256_context sha;
     bool sha_active;
+    size_t decoded_received;
+    bool blob_content_found;
+    bool blob_content_done;
+    bool blob_escape;
+    uint8_t blob_scan_state;
+    uint8_t blob_key_match;
+    char b64_quartet[4];
+    uint8_t b64_count;
 } update_request_t;
 
 typedef struct {
     char version[16];
-    char path[192];
+    char blob_sha[41];
     uint32_t build;
     uint32_t size;
     uint8_t sha256[32];
@@ -69,6 +76,7 @@ static altcp_allocator_t tls_allocator;
 static httpc_connection_t http_connection;
 static update_request_t request;
 static uint8_t small_response[SMALL_RESPONSE_CAPACITY + 1];
+static uint8_t manifest_bytes[2048];
 static uint8_t signature[SIGNATURE_CAPACITY];
 static uint32_t last_check_ms;
 static bool last_check_succeeded;
@@ -91,6 +99,111 @@ static struct altcp_pcb *tls_alloc_with_sni(void *arg, u8_t ip_type) {
     return pcb;
 }
 
+
+static int base64_value(unsigned char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    if (c == '=') return -2;
+    return -1;
+}
+
+static bool decode_base64_quartet(const char input[4], uint8_t output[3], size_t *output_length) {
+    int v0 = base64_value((unsigned char)input[0]);
+    int v1 = base64_value((unsigned char)input[1]);
+    int v2 = base64_value((unsigned char)input[2]);
+    int v3 = base64_value((unsigned char)input[3]);
+    if (v0 < 0 || v1 < 0 || v2 == -1 || v3 == -1) return false;
+    output[0] = (uint8_t)((v0 << 2) | (v1 >> 4));
+    if (v2 == -2) {
+        if (v3 != -2) return false;
+        *output_length = 1;
+        return true;
+    }
+    output[1] = (uint8_t)(((v1 & 0x0f) << 4) | (v2 >> 2));
+    if (v3 == -2) {
+        *output_length = 2;
+        return true;
+    }
+    output[2] = (uint8_t)(((v2 & 0x03) << 6) | v3);
+    *output_length = 3;
+    return true;
+}
+
+static bool firmware_write_decoded(const uint8_t *data, size_t length) {
+    if (request.decoded_received + length > request.expected ||
+        !flightwall_ota_http_write(data, length) ||
+        mbedtls_sha256_update(&request.sha, data, length) != 0) {
+        return false;
+    }
+    request.decoded_received += length;
+    return true;
+}
+
+static bool firmware_blob_feed(const uint8_t *data, size_t length) {
+    static const char content_key[] = "\"content\"";
+    for (size_t i = 0; i < length; ++i) {
+        unsigned char ch = data[i];
+
+        if (request.blob_content_done) continue;
+
+        if (!request.blob_content_found) {
+            if (request.blob_scan_state == 0) {
+                if (ch == (unsigned char)content_key[request.blob_key_match]) {
+                    request.blob_key_match++;
+                    if (request.blob_key_match == sizeof(content_key) - 1) {
+                        request.blob_scan_state = 1;
+                        request.blob_key_match = 0;
+                    }
+                } else {
+                    request.blob_key_match = (ch == (unsigned char)content_key[0]) ? 1 : 0;
+                }
+            } else if (request.blob_scan_state == 1) {
+                if (isspace(ch)) continue;
+                if (ch != ':') return false;
+                request.blob_scan_state = 2;
+            } else {
+                if (isspace(ch)) continue;
+                if (ch != '"') return false;
+                request.blob_content_found = true;
+                request.blob_scan_state = 0;
+            }
+            continue;
+        }
+
+        if (request.blob_escape) {
+            request.blob_escape = false;
+            if (ch == 'n' || ch == 'r' || ch == 't') continue;
+            return false;
+        }
+        if (ch == '\\') {
+            request.blob_escape = true;
+            continue;
+        }
+        if (ch == '"') {
+            if (request.b64_count != 0) return false;
+            request.blob_content_done = true;
+            continue;
+        }
+        if (isspace(ch)) continue;
+
+        if (base64_value(ch) == -1) return false;
+        request.b64_quartet[request.b64_count++] = (char)ch;
+        if (request.b64_count == 4) {
+            uint8_t decoded[3];
+            size_t decoded_length = 0;
+            if (!decode_base64_quartet(request.b64_quartet, decoded, &decoded_length) ||
+                !firmware_write_decoded(decoded, decoded_length)) {
+                return false;
+            }
+            request.b64_count = 0;
+        }
+    }
+    return true;
+}
+
 static err_t receive_body(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_t err) {
     (void)arg;
     if (!p) return ERR_OK;
@@ -103,11 +216,7 @@ static err_t receive_body(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_
                 }
                 memcpy(request.buffer + request.received, part->payload, part->len);
             } else if (request.kind == REQUEST_FIRMWARE) {
-                if (request.received + part->len > request.expected ||
-                    !flightwall_ota_http_write((const uint8_t *)part->payload, part->len) ||
-                    mbedtls_sha256_update(&request.sha,
-                                          (const unsigned char *)part->payload,
-                                          part->len) != 0) {
+                if (!firmware_blob_feed((const uint8_t *)part->payload, part->len)) {
                     request.failed = true;
                     break;
                 }
@@ -143,10 +252,8 @@ static err_t headers_received(httpc_state_t *connection, void *arg, struct pbuf 
             return ERR_BUF;
         }
     } else if (request.kind == REQUEST_FIRMWARE) {
-        if (!request.content_length_known || content_len != request.expected) {
-            request.failed = true;
-            return ERR_BUF;
-        }
+        // GitHub's blob API returns JSON/base64, so HTTP Content-Length is the
+        // encoded envelope size rather than the decoded UF2 size.
     }
     return ERR_OK;
 }
