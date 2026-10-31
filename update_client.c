@@ -528,7 +528,7 @@ static void finish_update_session(void) {
 }
 
 static bool start_feed_check(bool force_install) {
-    if (update_state != UPDATE_STATE_IDLE) return false;
+    if (update_state != UPDATE_STATE_IDLE || flightwall_ota_transfer_active()) return false;
 
     last_check_ms = now_ms();
     last_check_succeeded = false;
