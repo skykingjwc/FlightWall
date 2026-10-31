@@ -128,6 +128,8 @@ static const char *ssi_tags[] = {
     "basis",
     "refresh",
     "timing",
+    "swpbrt",
+    "swptail",
     "watch",
     "update",
     "autoinst"
@@ -627,6 +629,7 @@ err_t httpd_post_receive_data(void *connection, struct pbuf *p) {
         }
     } else if (connection == current_post_connection && current_post_kind == POST_SETTINGS) {
         char lat_buf[24], lon_buf[24], radius_buf[12], brightness_buf[12], basis_buf[12], refresh_buf[12], display_buf[12];
+        char sweep_brightness_buf[12], sweep_tail_buf[12];
         char watch_buf[384];
         char *lat = post_param_value(p, "latitude=", lat_buf, sizeof(lat_buf));
         char *lon = post_param_value(p, "longitude=", lon_buf, sizeof(lon_buf));
@@ -635,8 +638,11 @@ err_t httpd_post_receive_data(void *connection, struct pbuf *p) {
         char *basis = post_param_value(p, "paneloutput=", basis_buf, sizeof(basis_buf));
         char *refresh = post_param_value(p, "refresh=", refresh_buf, sizeof(refresh_buf));
         char *display = post_param_value(p, "displaytime=", display_buf, sizeof(display_buf));
+        char *sweep_brightness = post_param_value(p, "sweepbrightness=", sweep_brightness_buf, sizeof(sweep_brightness_buf));
+        char *sweep_tail = post_param_value(p, "sweeptail=", sweep_tail_buf, sizeof(sweep_tail_buf));
         char *watch = post_param_value(p, "watchlist=", watch_buf, sizeof(watch_buf));
-        if (lat && lon && radius && brightness && basis && refresh && display && watch) {
+        if (lat && lon && radius && brightness && basis && refresh && display &&
+            sweep_brightness && sweep_tail && watch) {
             url_decode(lat_buf, lat, sizeof(lat_buf));
             url_decode(lon_buf, lon, sizeof(lon_buf));
             url_decode(radius_buf, radius, sizeof(radius_buf));
@@ -644,8 +650,11 @@ err_t httpd_post_receive_data(void *connection, struct pbuf *p) {
             url_decode(basis_buf, basis, sizeof(basis_buf));
             url_decode(refresh_buf, refresh, sizeof(refresh_buf));
             url_decode(display_buf, display, sizeof(display_buf));
+            url_decode(sweep_brightness_buf, sweep_brightness, sizeof(sweep_brightness_buf));
+            url_decode(sweep_tail_buf, sweep_tail, sizeof(sweep_tail_buf));
             url_decode(watch_buf, watch, sizeof(watch_buf));
             char *lat_end, *lon_end, *radius_end, *brightness_end, *basis_end, *refresh_end, *display_end;
+            char *sweep_brightness_end, *sweep_tail_end;
             float latitude = strtof(lat_buf, &lat_end);
             float longitude = strtof(lon_buf, &lon_end);
             unsigned long radius_value = strtoul(radius_buf, &radius_end, 10);
@@ -653,13 +662,18 @@ err_t httpd_post_receive_data(void *connection, struct pbuf *p) {
             unsigned long basis_value = strtoul(basis_buf, &basis_end, 10);
             unsigned long refresh_value = strtoul(refresh_buf, &refresh_end, 10);
             unsigned long display_value = strtoul(display_buf, &display_end, 10);
+            unsigned long sweep_brightness_value = strtoul(sweep_brightness_buf, &sweep_brightness_end, 10);
+            unsigned long sweep_tail_value = strtoul(sweep_tail_buf, &sweep_tail_end, 10);
             if (*lat_end == '\0' && *lon_end == '\0' && *radius_end == '\0' &&
                 *brightness_end == '\0' && *basis_end == '\0' && *refresh_end == '\0' &&
-                *display_end == '\0') {
+                *display_end == '\0' && *sweep_brightness_end == '\0' &&
+                *sweep_tail_end == '\0') {
                 post_settings_ok = flightwall_settings_update(
                     latitude, longitude, (unsigned)radius_value,
                     (unsigned)brightness_value, (unsigned)basis_value,
-                    (unsigned)refresh_value, (unsigned)display_value, watch_buf);
+                    (unsigned)refresh_value, (unsigned)display_value,
+                    (unsigned)sweep_brightness_value, (unsigned)sweep_tail_value,
+                    watch_buf);
             }
         }
         ret = ERR_OK;
@@ -930,15 +944,25 @@ static u16_t ssi_handler(int iIndex, char *pcInsert, int iInsertLen
             printed = snprintf(pcInsert, iInsertLen, "%u", flightwall_settings_get()->display_seconds);
             break;
         }
-        case 13: { // watched aircraft
+        case 13: { // radar sweep leading-edge brightness
+            printed = snprintf(pcInsert, iInsertLen, "%u",
+                               flightwall_settings_get()->radar_sweep_brightness_percent);
+            break;
+        }
+        case 14: { // radar sweep tail length
+            printed = snprintf(pcInsert, iInsertLen, "%u",
+                               flightwall_settings_get()->radar_sweep_tail_degrees);
+            break;
+        }
+        case 15: { // watched aircraft
             printed = (int)flightwall_watchlist_format(pcInsert, (size_t)iInsertLen);
             break;
         }
-        case 14: { // signed automatic-update status
+        case 16: { // signed automatic-update status
             printed = snprintf(pcInsert, iInsertLen, "%s", flightwall_update_status());
             break;
         }
-        case 15: { // automatic-install checkbox state
+        case 17: { // automatic-install checkbox state
             printed = snprintf(pcInsert, iInsertLen, "%s",
                                flightwall_settings_get()->auto_install_updates ? "checked" : "");
             break;
