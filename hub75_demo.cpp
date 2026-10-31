@@ -273,95 +273,98 @@ bool callsign_prefix(const char *id, const char *prefix) {
 }
 
 void draw_delta_mark(int x, int y) {
-    // Large simplified Delta widget: red triangular shell with a blue lower facet.
-    for (int row = 0; row < 17; ++row) {
+    for (int row = 0; row < 10; ++row) {
         const int half = row / 2;
-        for (int px = 9 - half; px <= 9 + half; ++px) {
-            if (row < 12 || px < 6 || px > 12)
-                set_pixel(x + px, y + row, RED);
-        }
+        for (int px = 6 - half; px <= 6 + half; ++px)
+            set_pixel(x + px, y + row, row < 7 ? RED : BLUE);
     }
-    draw_line(x + 3, y + 13, x + 9, y + 18, BLUE);
-    draw_line(x + 15, y + 13, x + 9, y + 18, BLUE);
-    draw_text(x + 21, y + 6, "DL", WHITE);
 }
 
 void draw_united_mark(int x, int y) {
-    const int cx = x + 10, cy = y + 10;
-    draw_circle(cx, cy, 9, BLUE);
-    draw_line(cx - 8, cy, cx + 8, cy, BLUE);
-    draw_line(cx, cy - 8, cx, cy + 8, BLUE);
-    draw_line(cx - 5, cy - 7, cx - 5, cy + 7, BLUE);
-    draw_line(cx + 5, cy - 7, cx + 5, cy + 7, BLUE);
-    draw_line(cx - 8, cy - 4, cx + 8, cy - 4, BLUE);
-    draw_line(cx - 8, cy + 4, cx + 8, cy + 4, BLUE);
-    draw_text(x + 22, y + 6, "UAL", WHITE);
+    const int cx = x + 7, cy = y + 6;
+    draw_circle(cx, cy, 6, BLUE);
+    draw_line(cx - 5, cy, cx + 5, cy, BLUE);
+    draw_line(cx, cy - 5, cx, cy + 5, BLUE);
+    draw_line(cx - 3, cy - 4, cx - 3, cy + 4, BLUE);
+    draw_line(cx + 3, cy - 4, cx + 3, cy + 4, BLUE);
 }
 
 void draw_american_mark(int x, int y) {
-    // Three broad diagonal feathers read much better than the old tiny slash mark.
-    for (int i = 0; i < 3; ++i) {
-        draw_line(x + 2 + i, y + 17, x + 15 + i, y + 2, BLUE);
-        draw_line(x + 8 + i, y + 18, x + 21 + i, y + 3, WHITE);
-        draw_line(x + 14 + i, y + 18, x + 27 + i, y + 5, RED);
+    for (int i = 0; i < 2; ++i) {
+        draw_line(x + 1 + i, y + 10, x + 10 + i, y + 1, BLUE);
+        draw_line(x + 7 + i, y + 10, x + 16 + i, y + 1, WHITE);
+        draw_line(x + 13 + i, y + 10, x + 22 + i, y + 2, RED);
     }
-    draw_text(x + 30, y + 6, "AA", WHITE);
 }
 
 void draw_ups_mark(int x, int y) {
-    // Larger shield silhouette with centered UPS lettering.
-    draw_line(x + 3, y + 2, x + 19, y + 2, AMBER);
-    draw_line(x + 3, y + 2, x + 3, y + 12, AMBER);
-    draw_line(x + 19, y + 2, x + 19, y + 12, AMBER);
-    draw_line(x + 3, y + 12, x + 11, y + 19, AMBER);
-    draw_line(x + 19, y + 12, x + 11, y + 19, AMBER);
-    draw_text(x + 6, y + 6, "UPS", AMBER);
+    draw_line(x + 2, y + 1, x + 12, y + 1, AMBER);
+    draw_line(x + 2, y + 1, x + 2, y + 7, AMBER);
+    draw_line(x + 12, y + 1, x + 12, y + 7, AMBER);
+    draw_line(x + 2, y + 7, x + 7, y + 11, AMBER);
+    draw_line(x + 12, y + 7, x + 7, y + 11, AMBER);
 }
 
 void draw_fedex_mark(int x, int y) {
-    draw_text(x + 1, y + 6, "FED", PURPLE);
-    draw_text(x + 19, y + 6, "EX", ORANGE);
+    draw_text(x, y + 2, "FED", PURPLE);
+    draw_text(x + text_width("FED"), y + 2, "EX", ORANGE);
 }
 
 void draw_skywest_mark(int x, int y) {
-    draw_text(x + 1, y + 2, "SKY", CYAN);
-    draw_text(x + 10, y + 11, "WEST", WHITE);
-    draw_line(x + 1, y + 19, x + 42, y + 19, CYAN);
+    draw_text(x, y + 2, "SKY", CYAN);
+    draw_text(x + text_width("SKY") + 2, y + 2, "W", WHITE);
 }
 
 void draw_republic_mark(int x, int y) {
-    const int cx = x + 10, cy = y + 10;
-    set_pixel(cx, y + 1, RED);
-    draw_line(cx, y + 1, cx + 3, cy - 2, RED);
-    draw_line(cx + 3, cy - 2, x + 19, cy - 2, RED);
-    draw_line(x + 19, cy - 2, cx + 5, cy + 2, RED);
-    draw_line(cx + 5, cy + 2, cx + 7, y + 18, RED);
-    draw_line(cx + 7, y + 18, cx, cy + 5, RED);
-    draw_line(cx, cy + 5, x + 3, y + 18, RED);
-    draw_line(x + 3, y + 18, cx - 5, cy + 2, RED);
-    draw_line(cx - 5, cy + 2, x + 1, cy - 2, RED);
-    draw_line(x + 1, cy - 2, cx - 3, cy - 2, RED);
-    draw_line(cx - 3, cy - 2, cx, y + 1, RED);
-    draw_text(x + 22, y + 6, "RPA", WHITE);
+    const int cx = x + 7, cy = y + 6;
+    set_pixel(cx, y, RED);
+    draw_line(cx, y, cx + 2, cy - 2, RED);
+    draw_line(cx + 2, cy - 2, x + 13, cy - 2, RED);
+    draw_line(x + 13, cy - 2, cx + 3, cy + 1, RED);
+    draw_line(cx + 3, cy + 1, cx + 5, y + 11, RED);
+    draw_line(cx + 5, y + 11, cx, cy + 3, RED);
+    draw_line(cx, cy + 3, x + 2, y + 11, RED);
+    draw_line(x + 2, y + 11, cx - 3, cy + 1, RED);
+    draw_line(cx - 3, cy + 1, x + 1, cy - 2, RED);
+    draw_line(x + 1, cy - 2, cx - 2, cy - 2, RED);
+    draw_line(cx - 2, cy - 2, cx, y, RED);
 }
 
 void draw_frontier_mark(int x, int y) {
-    draw_text(x + 1, y + 5, "F9", GREEN);
-    draw_line(x + 17, y + 3, x + 17, y + 18, GREEN);
-    draw_text(x + 21, y + 5, "FR", WHITE);
+    draw_text(x, y + 2, "F9", GREEN);
+}
+
+const char *airline_name(const char *id) {
+    if (callsign_prefix(id, "DAL")) return "DELTA";
+    if (callsign_prefix(id, "UAL")) return "UNITED";
+    if (callsign_prefix(id, "AAL")) return "AMERICAN";
+    if (callsign_prefix(id, "UPS")) return "UPS";
+    if (callsign_prefix(id, "FDX")) return "FEDEX";
+    if (callsign_prefix(id, "SKW")) return "SKYWEST";
+    if (callsign_prefix(id, "RPA")) return "REPUBLIC";
+    if (callsign_prefix(id, "FFT")) return "FRONTIER";
+    return nullptr;
 }
 
 bool draw_airline_logo(int x, int y, const char *id) {
-    if (callsign_prefix(id, "DAL")) draw_delta_mark(x, y);
-    else if (callsign_prefix(id, "UAL")) draw_united_mark(x, y);
-    else if (callsign_prefix(id, "AAL")) draw_american_mark(x, y);
-    else if (callsign_prefix(id, "UPS")) draw_ups_mark(x, y);
-    else if (callsign_prefix(id, "FDX")) draw_fedex_mark(x, y);
-    else if (callsign_prefix(id, "SKW")) draw_skywest_mark(x, y);
-    else if (callsign_prefix(id, "RPA")) draw_republic_mark(x, y);
-    else if (callsign_prefix(id, "FFT")) draw_frontier_mark(x, y);
+    if (callsign_prefix(id, "DAL")) draw_delta_mark(x + 17, y);
+    else if (callsign_prefix(id, "UAL")) draw_united_mark(x + 18, y);
+    else if (callsign_prefix(id, "AAL")) draw_american_mark(x + 12, y);
+    else if (callsign_prefix(id, "UPS")) draw_ups_mark(x + 19, y);
+    else if (callsign_prefix(id, "FDX")) draw_fedex_mark(x + 8, y);
+    else if (callsign_prefix(id, "SKW")) draw_skywest_mark(x + 8, y);
+    else if (callsign_prefix(id, "RPA")) draw_republic_mark(x + 19, y);
+    else if (callsign_prefix(id, "FFT")) draw_frontier_mark(x + 18, y);
     else return false;
     return true;
+}
+
+void draw_airline_identity(int x, int y, int width, const char *id) {
+    if (!draw_airline_logo(x, y, id)) return;
+    const char *name = airline_name(id);
+    if (!name) return;
+    const int name_x = x + std::max(0, (width - text_width(name)) / 2);
+    draw_text(name_x, y + 12, name, WHITE);
 }
 
 void show_aircraft_list() {
@@ -435,14 +438,14 @@ void show_spotlight() {
     const bool stale = flightwall_aircraft_is_stale(flightwall_settings_get()->refresh_seconds);
     draw_text(1, 0, "NEAREST AIRCRAFT", stale ? RED : AMBER);
 
-    // Identity band above the horizontal panel seam: text on the left, a
-    // dedicated 46x21-ish pixel airline mark on the right.
+    // Identity band above the horizontal panel seam: text on the left, with
+    // the airline symbol raised above a centered airline name on the right.
     draw_text(1, 10, plane->id, plane->watched ? YELLOW : AMBER);
     std::snprintf(line, sizeof(line), "%s%s%s", plane->type[0] ? plane->type : "TYPE ----",
                   plane->registration[0] ? " " : "",
                   plane->registration[0] ? plane->registration : "");
     draw_text(1, 20, line, CYAN);
-    draw_airline_logo(82, 9, plane->id);
+    draw_airline_identity(78, 8, 50, plane->id);
 
     // Balance the flight data across both bottom panels. The y positions leave
     // two clear rows below the seam and one clear row at the bottom edge.
