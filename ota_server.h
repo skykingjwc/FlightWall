@@ -27,6 +27,10 @@ void flightwall_ota_http_abort(void);
 // annotate the display and then call flightwall_ota_reboot_to_update().
 bool flightwall_ota_update_ready(void);
 
+// True while a manual TCP upload or HTTP-backed OTA write is actively using
+// the firmware staging path. GitHub background checks must stay out of the way.
+bool flightwall_ota_transfer_active(void);
+
 void flightwall_ota_reboot_to_update(void);
 
 #ifdef __cplusplus
