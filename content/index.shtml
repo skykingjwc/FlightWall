@@ -134,7 +134,7 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
       <span class="label">Installed</span><span>v<!--#version--></span>
       <span class="label">Update status</span><span><!--#update--></span>
     </div>
-    <p>FlightWall checks its signed GitHub update feed at startup and every six hours.</p>
+    <p><strong>Automatic GitHub update checking is temporarily disabled in this build.</strong> Manual firmware upload remains available below. The signed automatic updater will be restored in a dedicated follow-up release.</p>
 
     <form action="/update_auto.cgi" method="get">
       <label><input type="checkbox" name="enabled" value="1" <!--#autoinst-->> Automatically install signed updates</label><br>
@@ -170,16 +170,16 @@ const status = document.getElementById('updateStatus');
 
 async function waitForFlightWallRestart() {
   let sawOffline = false;
+  let consecutiveOnline = 0;
   let attempts = 0;
-  const started = Date.now();
 
   status.textContent = 'Upload complete. FlightWall is restarting...';
 
-  while (attempts++ < 90) {
-    await new Promise(resolve => setTimeout(resolve, 750));
+  while (attempts++ < 120) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 650);
+    const timeout = setTimeout(() => controller.abort(), 900);
 
     try {
       const response = await fetch('/index.shtml?reconnect=' + Date.now(), {
@@ -196,21 +196,29 @@ async function waitForFlightWallRestart() {
         const page = await response.text();
         const isFlightWall = page.includes('ChatGPT FlightWall');
 
-        // Normally we wait until at least one failed request proves the Pico
-        // actually rebooted. The time fallback covers an unusually fast reboot
-        // that happens entirely between two polls.
-        if (isFlightWall && (sawOffline || Date.now() - started > 15000)) {
-          status.textContent = 'FlightWall is back online. Reloading...';
-          const target = '/index.shtml?updated=' + Date.now();
-          window.location.assign(target);
-          setTimeout(() => window.location.reload(), 1500);
-          return;
+        if (sawOffline && isFlightWall) {
+          consecutiveOnline++;
+          status.textContent = 'FlightWall is back online. Verifying...';
+
+          // Require two fresh FlightWall responses after an observed outage so
+          // we know Wi-Fi and the embedded HTTP server are both stable again.
+          if (consecutiveOnline >= 2) {
+            status.textContent = 'FlightWall is back online. Reloading...';
+            const target = '/index.shtml?updated=' + Date.now();
+            window.location.replace(target);
+            return;
+          }
+        } else {
+          consecutiveOnline = 0;
+          status.textContent = 'Firmware uploaded. Waiting for FlightWall to restart...';
         }
-        status.textContent = 'Firmware uploaded. Waiting for FlightWall to restart...';
+      } else {
+        consecutiveOnline = 0;
       }
     } catch (error) {
       clearTimeout(timeout);
       sawOffline = true;
+      consecutiveOnline = 0;
       status.textContent = 'FlightWall is restarting. Waiting for it to come back online...';
     }
   }
