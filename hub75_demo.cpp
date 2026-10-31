@@ -781,6 +781,7 @@ int main() {
 
     while (true) {
         if (!first_update_check_queued &&
+            !flightwall_ota_transfer_active() &&
             (int32_t)(to_ms_since_boot(get_absolute_time()) - first_update_check_after_ms) >= 0) {
             flightwall_update_request_check();
             first_update_check_queued = true;
