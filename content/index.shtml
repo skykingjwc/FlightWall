@@ -134,7 +134,7 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
       <span class="label">Installed</span><span>v<!--#version--></span>
       <span class="label">Update status</span><span><!--#update--></span>
     </div>
-    <p><strong>Automatic GitHub update checking is temporarily disabled.</strong> Manual firmware upload remains available below while the updater transport is redesigned to avoid the GitHub TLS mode that interferes with ADS-B.</p>
+    <p><strong>Automatic updating is temporarily disabled.</strong> In this diagnostic build, the Check for update button only tests HTTPS connectivity to api.github.com using the same ECDSA-only TLS profile that keeps ADS-B working.</p>
 
     <form action="/update_auto.cgi" method="get">
       <label><input type="checkbox" name="enabled" value="1" <!--#autoinst-->> Automatically install signed updates</label><br>
@@ -143,14 +143,14 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
     </form>
 
     <form action="/check_update.cgi" method="get">
-      <input type="submit" value="Check for update">
+      <input type="submit" value="Test GitHub API HTTPS">
     </form>
 
     <form action="/install_update.cgi" method="get" onsubmit="return confirm('Install the newest signed FlightWall update if one is available?');">
-      <input type="submit" value="Install available update">
+      <input type="submit" value="Test GitHub API HTTPS (install disabled)">
     </form>
 
-    <p><small>Checks run in the display loop, so the status above may take a few seconds to change. Refresh this page to see the result.</small></p>
+    <p><small>A successful test will show GITHUB API HTTP followed by a status code. Any real HTTP status proves the TLS handshake succeeded; no firmware is installed in this diagnostic build.</small></p>
 
     <details>
       <summary>Manual firmware upload</summary>
