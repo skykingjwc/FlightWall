@@ -249,20 +249,6 @@ void draw_trend_arrow(int x, int y, bool climbing, Color color) {
     }
 }
 
-void draw_bearing_arrow(int x, int y, uint16_t bearing, Color color) {
-    static constexpr int dx[] = {0, 1, 1, 1, 0, -1, -1, -1};
-    static constexpr int dy[] = {-1, -1, 0, 1, 1, 1, 0, -1};
-    const int direction = ((bearing + 22) / 45) & 7;
-    const int cx = x + 2, cy = y + 3;
-    const int tip_x = cx + dx[direction] * 2;
-    const int tip_y = cy + dy[direction] * 2;
-    draw_line(cx, cy, tip_x, tip_y, color);
-    set_pixel(tip_x - dx[direction] + dy[direction],
-              tip_y - dy[direction] - dx[direction], color);
-    set_pixel(tip_x - dx[direction] - dy[direction],
-              tip_y - dy[direction] + dx[direction], color);
-}
-
 void compact_altitude(const flightwall_aircraft_t &plane, char *text, size_t size) {
     if (plane.altitude_ft == INT32_MIN) std::snprintf(text, size, "---");
     else if (plane.altitude_ft < 0) std::snprintf(text, size, "GND");
@@ -452,10 +438,12 @@ void show_spotlight() {
                   static_cast<unsigned>(std::min(999.0f, std::round(plane->distance_nm))),
                   cardinal_direction(plane->bearing_deg));
     draw_text(67, 34, line, GREEN);
-    draw_bearing_arrow(120, 34, plane->bearing_deg, GREEN);
 
-    std::snprintf(line, sizeof(line), "%+d FPM", plane->vertical_rate_fpm);
+    std::snprintf(line, sizeof(line), "%d FPM", plane->vertical_rate_fpm);
     draw_text(1, 45, line, CYAN);
+    if (plane->vertical_rate_fpm > 250 || plane->vertical_rate_fpm < -250)
+        draw_trend_arrow(std::min(59, text_width(line) + 4), 45,
+                         plane->vertical_rate_fpm > 0, CYAN);
     std::snprintf(line, sizeof(line), "%u KT", plane->speed_kt);
     draw_text(67, 45, line, GREEN);
 
@@ -506,9 +494,21 @@ void draw_radar_grid_circle(int cx, int cy, int radius) {
     }
 }
 
+Color radar_sweep_color(float fraction, unsigned brightness_percent) {
+    const float lead_green = 255.0f * static_cast<float>(brightness_percent) / 100.0f;
+    const float lead_blue = lead_green * (42.0f / 130.0f);
+    return Color{
+        0,
+        static_cast<uint8_t>(std::clamp(lead_green * fraction, 0.0f, 255.0f)),
+        static_cast<uint8_t>(std::clamp(lead_blue * fraction, 0.0f, 255.0f))
+    };
+}
+
 void draw_radar_sweep_wedge(int cx, int cy, int radius, float head_angle) {
     constexpr float pi = 3.14159265f;
-    constexpr float tail_width = 14.0f;
+    const flightwall_settings_t *settings = flightwall_settings_get();
+    const float tail_width = static_cast<float>(settings->radar_sweep_tail_degrees);
+    const unsigned brightness = settings->radar_sweep_brightness_percent;
     const int radius_squared = radius * radius;
 
     for (int y = cy - radius; y <= cy + radius; ++y) {
@@ -525,12 +525,14 @@ void draw_radar_sweep_wedge(int cx, int cy, int radius, float head_angle) {
             while (behind >= 360.0f) behind -= 360.0f;
             if (behind > tail_width) continue;
 
-            Color color;
-            if (behind < 1.5f) color = RADAR_SWEEP_LEAD;
-            else if (behind < 5.0f) color = RADAR_SWEEP_MID;
-            else if (behind < 9.5f) color = RADAR_SWEEP_DIM;
-            else color = RADAR_SWEEP_FAINT;
-            set_pixel(x, y, color);
+            const float position = tail_width > 0.0f ? behind / tail_width : 0.0f;
+            float intensity;
+            if (position < 0.12f) intensity = 1.0f;
+            else if (position < 0.36f) intensity = 0.50f;
+            else if (position < 0.68f) intensity = 0.27f;
+            else intensity = 0.15f;
+
+            set_pixel(x, y, radar_sweep_color(intensity, brightness));
         }
     }
 }
