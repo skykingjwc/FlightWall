@@ -83,6 +83,7 @@ static bool last_check_succeeded;
 static char update_status[48] = "NOT CHECKED";
 static volatile bool check_requested;
 static volatile bool install_requested;
+static flightwall_update_download_callback_t download_callback;
 
 static uint32_t now_ms(void) {
     return to_ms_since_boot(get_absolute_time());
@@ -536,6 +537,10 @@ static bool download_update(const update_manifest_t *manifest) {
     return true;
 }
 
+void flightwall_update_set_download_callback(flightwall_update_download_callback_t callback) {
+    download_callback = callback;
+}
+
 void flightwall_update_init(void) {
     // Do not allocate the GitHub TLS context here. Keeping a second TLS config
     // alive beside the ADS-B client was enough to destabilize the aircraft
@@ -619,6 +624,7 @@ static bool check_now_inner(bool force_install) {
         return false;
     }
     snprintf(update_status, sizeof(update_status), "DOWNLOADING %s", manifest.version);
+    if (download_callback) download_callback(manifest.version);
     if (!download_update(&manifest)) {
         last_check_succeeded = false;
         snprintf(update_status, sizeof(update_status), "UPDATE DOWNLOAD FAILED");
