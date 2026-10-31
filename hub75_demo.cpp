@@ -273,20 +273,28 @@ bool callsign_prefix(const char *id, const char *prefix) {
 }
 
 void draw_delta_mark(int x, int y) {
-    // Low-resolution interpretation of the Delta widget: a broad navy upper
-    // chevron over a red lower wedge, with only a one-pixel visual break.
-    for (int row = 0; row < 13; ++row) {
-        const int outer = row;
-        const int inner = row < 6 ? -1 : row - 6;
-        for (int px = 14 - outer; px <= 14 + outer; ++px) {
-            if (inner < 0 || px < 14 - inner || px > 14 + inner)
-                set_pixel(x + px, y + row, Color{18, 35, 145});
+    // Delta widget redrawn as two compact triangular chevrons. The upper mark
+    // has a sharp apex and a centered V cutout; the lower red wedge is flatter
+    // and sits only one pixel below it.
+    constexpr Color DELTA_NAVY{10, 20, 105};
+
+    // Upper navy chevron, 29 px wide by 14 px tall.
+    for (int row = 0; row < 14; ++row) {
+        const int outer_half = row;
+        const int inner_half = row < 7 ? -1 : row - 6;
+        for (int px = 14 - outer_half; px <= 14 + outer_half; ++px) {
+            if (inner_half < 0 || px < 14 - inner_half || px > 14 + inner_half)
+                set_pixel(x + px, y + row, DELTA_NAVY);
         }
     }
+
+    // Lower red chevron/wedge, broad at the base and pointed at the center.
     for (int row = 0; row < 6; ++row) {
         const int half = 12 - row * 2;
-        for (int px = 14 - half; px <= 14 + half; ++px)
-            set_pixel(x + px, y + 14 + row, RED);
+        const int left = 14 - half;
+        const int right = 14 + half;
+        for (int px = left; px <= right; ++px)
+            set_pixel(x + px, y + 15 + row, RED);
     }
 }
 
