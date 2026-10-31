@@ -182,20 +182,28 @@ async function waitForFlightWallRestart() {
     const timeout = setTimeout(() => controller.abort(), 650);
 
     try {
-      const response = await fetch('/?reconnect=' + Date.now(), {
+      const response = await fetch('/index.shtml?reconnect=' + Date.now(), {
         cache: 'no-store',
         signal: controller.signal,
-        headers: { 'Cache-Control': 'no-cache' }
+        headers: {
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache'
+        }
       });
       clearTimeout(timeout);
 
       if (response.ok) {
+        const page = await response.text();
+        const isFlightWall = page.includes('ChatGPT FlightWall');
+
         // Normally we wait until at least one failed request proves the Pico
         // actually rebooted. The time fallback covers an unusually fast reboot
         // that happens entirely between two polls.
-        if (sawOffline || Date.now() - started > 15000) {
+        if (isFlightWall && (sawOffline || Date.now() - started > 15000)) {
           status.textContent = 'FlightWall is back online. Reloading...';
-          window.location.replace('/?updated=' + Date.now());
+          const target = '/index.shtml?updated=' + Date.now();
+          window.location.assign(target);
+          setTimeout(() => window.location.reload(), 1500);
           return;
         }
         status.textContent = 'Firmware uploaded. Waiting for FlightWall to restart...';
