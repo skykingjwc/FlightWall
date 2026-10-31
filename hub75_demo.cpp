@@ -762,9 +762,10 @@ int main() {
     show_wifi_status("FETCHING AIRCRAFT", "DATA FROM ADSB.FI", "PLEASE WAIT");
     flightwall_aircraft_refresh();
 
-    // GitHub automatic update checks remain disabled while the updater is
-    // moved away from GitHub's RSA TLS transport. ADS-B uses the proven
-    // ECDSA-only mbedTLS configuration.
+    // Start update checks only after the first ADS-B request has completed.
+    // Both services now use the proven ECDSA-only TLS feature set.
+    flightwall_update_request_check();
+
     while (true) {
         const flightwall_settings_t *current_settings = flightwall_settings_get();
         if (flightwall_aircraft_refresh_due(current_settings->refresh_seconds))
