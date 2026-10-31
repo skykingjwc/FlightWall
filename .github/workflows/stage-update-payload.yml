@@ -1,0 +1,100 @@
+name: Stage FlightWall Update Payload
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: flightwall-update-stage
+  cancel-in-progress: true
+
+jobs:
+  stage:
+    if: startsWith(github.event.head_commit.message, 'Stage update payload')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install ARM toolchain
+        uses: carlosperate/arm-none-eabi-gcc-action@v1
+        with:
+          release: '15.2.Rel1'
+
+      - name: Check out Pico SDK 2.3.0
+        uses: actions/checkout@v4
+        with:
+          repository: raspberrypi/pico-sdk
+          ref: 2.3.0
+          submodules: recursive
+          path: pico-sdk
+
+      - name: Configure OTA build
+        run: |
+          cmake -S . -B build-ota -G Ninja \
+            -DPICO_SDK_PATH="$GITHUB_WORKSPACE/pico-sdk" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DFLIGHTWALL_TBYB=ON
+
+      - name: Build OTA image
+        run: cmake --build build-ota --target hub75_demo
+
+      - name: Stage update payload and metadata
+        shell: python
+        run: |
+          from pathlib import Path
+          import hashlib
+          import json
+          import re
+
+          cmake = Path("CMakeLists.txt").read_text()
+          version = re.search(r'FLIGHTWALL_VERSION="([^"]+)"', cmake).group(1)
+          build = int(re.search(r'FLIGHTWALL_BUILD_NUMBER=([0-9]+)', cmake).group(1))
+
+          full = Path("build-ota/hub75_demo.uf2").read_bytes()
+          if len(full) < 1024 or len(full) % 512:
+              raise SystemExit("invalid OTA UF2")
+          payload = bytearray(full[512:])
+          payload.extend(b"\x00" * ((-len(payload)) % 2048))
+
+          sha256 = hashlib.sha256(payload).hexdigest()
+          blob_sha = hashlib.sha1(
+              f"blob {len(payload)}\0".encode() + payload
+          ).hexdigest()
+
+          update = Path("update")
+          update.mkdir(exist_ok=True)
+          (update / "flightwall.uf2").write_bytes(payload)
+          (update / "payload-info.json").write_text(
+              json.dumps({
+                  "blob_sha": blob_sha,
+                  "build": build,
+                  "sha256": sha256,
+                  "size": len(payload),
+                  "version": version,
+              }, sort_keys=True, indent=2) + "\n"
+          )
+
+          print(f"version={version}")
+          print(f"build={build}")
+          print(f"size={len(payload)}")
+          print(f"sha256={sha256}")
+          print(f"blob_sha={blob_sha}")
+
+      - name: Commit staged payload
+        shell: bash
+        run: |
+          git config user.name "FlightWall Update Stager"
+          git config user.email "actions@users.noreply.github.com"
+          git add update/flightwall.uf2 update/payload-info.json
+          if git diff --cached --quiet; then
+            echo "Payload already current"
+            exit 0
+          fi
+          VERSION="$(python3 -c 'import json; print(json.load(open("update/payload-info.json"))["version"])')"
+          git commit -m "Stage FlightWall update payload v${VERSION}"
+          git push
