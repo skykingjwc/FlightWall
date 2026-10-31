@@ -623,7 +623,8 @@ static bool process_feed_result(void) {
     if (!request.done) return false;
 
     if (!request_ok()) {
-        snprintf(update_status, sizeof(update_status), "UPDATE FEED FAILED");
+        snprintf(update_status, sizeof(update_status), "FEED HTTP %lu ERR %d",
+                 (unsigned long)request.http_status, (int)request.result);
         finish_update_session();
         return false;
     }
