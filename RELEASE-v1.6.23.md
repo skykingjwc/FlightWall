@@ -7,3 +7,5 @@ First full GitHub API OTA target.
 - Shows a dedicated DOWNLOADING UPDATE screen only after a newer signed firmware version has actually been found and installation begins.
 - Keeps the GitHub-API-only updater, ASCII-hex detached signature transport, ECDSA/secp256k1 manifest verification, signed Git blob SHA binding, SHA-256 firmware verification, A/B staging, and rollback protection.
 - RSA remains disabled so ADS-B stays on the proven ECDSA-only TLS configuration.
+
+This is the first release intended to be installed end-to-end by FlightWall's GitHub API updater.
