@@ -85,6 +85,17 @@ static volatile bool check_requested;
 static volatile bool install_requested;
 static flightwall_update_download_callback_t download_callback;
 
+typedef enum {
+    UPDATE_STATE_IDLE,
+    UPDATE_STATE_FEED_PENDING,
+    UPDATE_STATE_FIRMWARE_PENDING,
+    UPDATE_STATE_READY_TO_REBOOT
+} update_state_t;
+
+static update_state_t update_state = UPDATE_STATE_IDLE;
+static bool pending_force_install;
+static update_manifest_t pending_manifest;
+
 static uint32_t now_ms(void) {
     return to_ms_since_boot(get_absolute_time());
 }
@@ -503,7 +514,77 @@ static bool digest_equal(const uint8_t left[32], const uint8_t right[32]) {
     return difference == 0;
 }
 
-static bool download_update(const update_manifest_t *manifest) {
+static bool update_tls_begin(void);
+static void update_tls_end(void);
+
+static bool request_ok(void) {
+    return request.done && !request.failed &&
+           request.result == HTTPC_RESULT_OK && request.http_status == 200;
+}
+
+static void finish_update_session(void) {
+    update_tls_end();
+    update_state = UPDATE_STATE_IDLE;
+}
+
+static bool start_feed_check(bool force_install) {
+    if (update_state != UPDATE_STATE_IDLE) return false;
+
+    last_check_ms = now_ms();
+    last_check_succeeded = false;
+    pending_force_install = force_install;
+    flightwall_update_init();
+
+    if (!update_tls_begin()) {
+        snprintf(update_status, sizeof(update_status), "TLS INIT FAILED");
+        return false;
+    }
+
+    memset(&request, 0, sizeof(request));
+    request.kind = REQUEST_SMALL;
+    request.buffer = small_response;
+    request.capacity = SMALL_RESPONSE_CAPACITY;
+    request.result = HTTPC_RESULT_ERR_UNKNOWN;
+
+    snprintf(update_status, sizeof(update_status), "CHECKING GITHUB API");
+    if (!start_get(FEED_API_PATH)) {
+        snprintf(update_status, sizeof(update_status), "UPDATE FEED START FAILED");
+        update_tls_end();
+        return false;
+    }
+
+    update_state = UPDATE_STATE_FEED_PENDING;
+    return true;
+}
+
+static bool decode_manifest_b64(const char *manifest_b64, size_t *manifest_length) {
+    *manifest_length = 0;
+    char quartet[4];
+    uint8_t quartet_count = 0;
+
+    for (size_t i = 0; manifest_b64[i]; ++i) {
+        unsigned char ch = (unsigned char)manifest_b64[i];
+        if (isspace(ch)) continue;
+        if (base64_value(ch) == -1) return false;
+
+        quartet[quartet_count++] = (char)ch;
+        if (quartet_count == 4) {
+            uint8_t decoded[3];
+            size_t decoded_length = 0;
+            if (!decode_base64_quartet(quartet, decoded, &decoded_length) ||
+                *manifest_length + decoded_length > sizeof(manifest_bytes)) {
+                return false;
+            }
+            memcpy(manifest_bytes + *manifest_length, decoded, decoded_length);
+            *manifest_length += decoded_length;
+            quartet_count = 0;
+        }
+    }
+
+    return quartet_count == 0 && *manifest_length > 0;
+}
+
+static bool start_firmware_download(const update_manifest_t *manifest) {
     char blob_path[160];
     if (snprintf(blob_path, sizeof(blob_path), "%s%s", BLOB_API_PREFIX,
                  manifest->blob_sha) <= 0) {
@@ -511,29 +592,150 @@ static bool download_update(const update_manifest_t *manifest) {
     }
 
     if (!flightwall_ota_http_begin(manifest->size)) return false;
+
+    pending_manifest = *manifest;
     memset(&request, 0, sizeof(request));
     request.kind = REQUEST_FIRMWARE;
     request.expected = manifest->size;
     request.result = HTTPC_RESULT_ERR_UNKNOWN;
     mbedtls_sha256_init(&request.sha);
     request.sha_active = mbedtls_sha256_starts(&request.sha, 0) == 0;
-    if (!request.sha_active || !start_get(blob_path) ||
-        !wait_for_request(UPDATE_TIMEOUT_MS) ||
-        !request.blob_content_found || !request.blob_content_done ||
-        request.decoded_received != request.expected) {
-        if (request.sha_active) mbedtls_sha256_free(&request.sha);
+
+    if (!request.sha_active || !start_get(blob_path)) {
+        if (request.sha_active) {
+            mbedtls_sha256_free(&request.sha);
+            request.sha_active = false;
+        }
         flightwall_ota_http_abort();
         return false;
     }
+
+    snprintf(update_status, sizeof(update_status), "DOWNLOADING %s", manifest->version);
+    if (download_callback) download_callback(manifest->version);
+    update_state = UPDATE_STATE_FIRMWARE_PENDING;
+    return true;
+}
+
+static bool process_feed_result(void) {
+    if (!request.done) return false;
+
+    if (!request_ok()) {
+        snprintf(update_status, sizeof(update_status), "UPDATE FEED FAILED");
+        finish_update_session();
+        return false;
+    }
+
+    size_t response_length = request.received;
+    if (!request.content_length_known &&
+        !decode_chunked(small_response, &response_length, SMALL_RESPONSE_CAPACITY)) {
+        snprintf(update_status, sizeof(update_status), "BAD UPDATE RESPONSE");
+        finish_update_session();
+        return false;
+    }
+
+    size_t feed_length = 0;
+    if (!decode_base64_json_field(small_response, response_length, "content",
+                                  feed_bytes, SMALL_RESPONSE_CAPACITY, &feed_length) ||
+        feed_length == 0) {
+        snprintf(update_status, sizeof(update_status), "UPDATE FEED DECODE FAILED");
+        finish_update_session();
+        return false;
+    }
+
+    char manifest_b64[3072];
+    char signature_hex[2 * SIGNATURE_CAPACITY + 1];
+    if (!json_string((const char *)feed_bytes, feed_length, "manifest_b64",
+                     manifest_b64, sizeof(manifest_b64)) ||
+        !json_string((const char *)feed_bytes, feed_length, "signature_hex",
+                     signature_hex, sizeof(signature_hex))) {
+        snprintf(update_status, sizeof(update_status), "BAD UPDATE FEED");
+        finish_update_session();
+        return false;
+    }
+
+    size_t manifest_length = 0;
+    size_t signature_length = 0;
+    if (!decode_manifest_b64(manifest_b64, &manifest_length)) {
+        snprintf(update_status, sizeof(update_status), "BAD MANIFEST ENCODING");
+        finish_update_session();
+        return false;
+    }
+    if (!hex_bytes(signature_hex, strlen(signature_hex),
+                   signature, SIGNATURE_CAPACITY, &signature_length) ||
+        signature_length == 0) {
+        snprintf(update_status, sizeof(update_status), "BAD SIGNATURE FORMAT");
+        finish_update_session();
+        return false;
+    }
+    if (!verify_manifest_signature(manifest_bytes, manifest_length,
+                                   signature, signature_length)) {
+        snprintf(update_status, sizeof(update_status), "BAD UPDATE SIGNATURE");
+        finish_update_session();
+        return false;
+    }
+
+    update_manifest_t manifest;
+    if (!parse_manifest(manifest_bytes, manifest_length, &manifest)) {
+        snprintf(update_status, sizeof(update_status), "BAD UPDATE MANIFEST");
+        finish_update_session();
+        return false;
+    }
+
+    last_check_succeeded = true;
+    if (manifest.build <= FLIGHTWALL_BUILD_NUMBER) {
+        snprintf(update_status, sizeof(update_status), "CURRENT %s", FLIGHTWALL_VERSION);
+        finish_update_session();
+        return false;
+    }
+
+    printf("FlightWall update %s (build %lu, %lu bytes) available\n",
+           manifest.version, (unsigned long)manifest.build, (unsigned long)manifest.size);
+
+    if (!pending_force_install && !flightwall_settings_get()->auto_install_updates) {
+        snprintf(update_status, sizeof(update_status), "AVAILABLE %s", manifest.version);
+        finish_update_session();
+        return false;
+    }
+
+    if (!start_firmware_download(&manifest)) {
+        last_check_succeeded = false;
+        snprintf(update_status, sizeof(update_status), "UPDATE DOWNLOAD START FAILED");
+        finish_update_session();
+        return false;
+    }
+
+    return false;
+}
+
+static bool process_firmware_result(void) {
+    if (!request.done) return false;
+
+    bool transfer_ok = request_ok() &&
+                       request.blob_content_found &&
+                       request.blob_content_done &&
+                       request.decoded_received == request.expected;
+
     uint8_t actual_digest[32];
-    bool hash_ok = mbedtls_sha256_finish(&request.sha, actual_digest) == 0 &&
-                   digest_equal(actual_digest, manifest->sha256);
-    mbedtls_sha256_free(&request.sha);
-    request.sha_active = false;
-    if (!hash_ok || !flightwall_ota_http_finish()) {
+    bool hash_ok = false;
+    if (request.sha_active) {
+        hash_ok = transfer_ok &&
+                  mbedtls_sha256_finish(&request.sha, actual_digest) == 0 &&
+                  digest_equal(actual_digest, pending_manifest.sha256);
+        mbedtls_sha256_free(&request.sha);
+        request.sha_active = false;
+    }
+
+    if (!transfer_ok || !hash_ok || !flightwall_ota_http_finish()) {
         flightwall_ota_http_abort();
+        last_check_succeeded = false;
+        snprintf(update_status, sizeof(update_status), "UPDATE DOWNLOAD FAILED");
+        finish_update_session();
         return false;
     }
+
+    snprintf(update_status, sizeof(update_status), "VERIFIED %s", pending_manifest.version);
+    update_tls_end();
+    update_state = UPDATE_STATE_READY_TO_REBOOT;
     return true;
 }
 
@@ -542,10 +744,6 @@ void flightwall_update_set_download_callback(flightwall_update_download_callback
 }
 
 void flightwall_update_init(void) {
-    // Do not allocate the GitHub TLS context here. Keeping a second TLS config
-    // alive beside the ADS-B client was enough to destabilize the aircraft
-    // connection when RSA support was compiled in. The updater creates its
-    // context only for an active check/download and frees it immediately after.
     tls_allocator.alloc = tls_alloc_with_sni;
     tls_allocator.arg = NULL;
 }
@@ -565,142 +763,64 @@ static void update_tls_end(void) {
     tls_allocator.arg = NULL;
 }
 
-static bool check_now_inner(bool force_install) {
-    last_check_ms = now_ms();
-    last_check_succeeded = false;
-    flightwall_update_init();
-    if (!update_tls_begin()) {
-        snprintf(update_status, sizeof(update_status), "TLS INIT FAILED");
-        return false;
-    }
-
-    size_t feed_length = 0;
-    size_t manifest_length = 0;
-    size_t signature_length = 0;
-    snprintf(update_status, sizeof(update_status), "CHECKING GITHUB API");
-    if (!fetch_api_file(FEED_API_PATH, feed_bytes, SMALL_RESPONSE_CAPACITY,
-                        &feed_length) || feed_length == 0) {
-        snprintf(update_status, sizeof(update_status), "UPDATE FEED FAILED");
-        return false;
-    }
-
-    char manifest_b64[3072];
-    char signature_hex[2 * SIGNATURE_CAPACITY + 1];
-    if (!json_string((const char *)feed_bytes, feed_length, "manifest_b64",
-                     manifest_b64, sizeof(manifest_b64)) ||
-        !json_string((const char *)feed_bytes, feed_length, "signature_hex",
-                     signature_hex, sizeof(signature_hex))) {
-        snprintf(update_status, sizeof(update_status), "BAD UPDATE FEED");
-        return false;
-    }
-
-    size_t manifest_b64_length = strlen(manifest_b64);
-    char quartet[4];
-    uint8_t quartet_count = 0;
-    for (size_t i = 0; i < manifest_b64_length; ++i) {
-        unsigned char ch = (unsigned char)manifest_b64[i];
-        if (isspace(ch)) continue;
-        if (base64_value(ch) == -1) {
-            snprintf(update_status, sizeof(update_status), "BAD MANIFEST ENCODING");
-            return false;
-        }
-        quartet[quartet_count++] = (char)ch;
-        if (quartet_count == 4) {
-            uint8_t decoded[3];
-            size_t decoded_length = 0;
-            if (!decode_base64_quartet(quartet, decoded, &decoded_length) ||
-                manifest_length + decoded_length > sizeof(manifest_bytes)) {
-                snprintf(update_status, sizeof(update_status), "BAD MANIFEST ENCODING");
-                return false;
-            }
-            memcpy(manifest_bytes + manifest_length, decoded, decoded_length);
-            manifest_length += decoded_length;
-            quartet_count = 0;
-        }
-    }
-    if (quartet_count != 0 || manifest_length == 0) {
-        snprintf(update_status, sizeof(update_status), "BAD MANIFEST ENCODING");
-        return false;
-    }
-
-    if (!hex_bytes(signature_hex, strlen(signature_hex),
-                   signature, SIGNATURE_CAPACITY, &signature_length) ||
-        signature_length == 0) {
-        snprintf(update_status, sizeof(update_status), "BAD SIGNATURE FORMAT");
-        return false;
-    }
-    if (!verify_manifest_signature(manifest_bytes, manifest_length,
-                                   signature, signature_length)) {
-        snprintf(update_status, sizeof(update_status), "BAD UPDATE SIGNATURE");
-        return false;
-    }
-
-    update_manifest_t manifest;
-    if (!parse_manifest(manifest_bytes, manifest_length, &manifest)) {
-        snprintf(update_status, sizeof(update_status), "BAD UPDATE MANIFEST");
-        return false;
-    }
-    last_check_succeeded = true;
-    if (manifest.build <= FLIGHTWALL_BUILD_NUMBER) {
-        snprintf(update_status, sizeof(update_status), "CURRENT %s", FLIGHTWALL_VERSION);
-        return false;
-    }
-
-    printf("FlightWall update %s (build %lu, %lu bytes) available\n",
-           manifest.version, (unsigned long)manifest.build, (unsigned long)manifest.size);
-    if (!force_install && !flightwall_settings_get()->auto_install_updates) {
-        snprintf(update_status, sizeof(update_status), "AVAILABLE %s", manifest.version);
-        return false;
-    }
-    snprintf(update_status, sizeof(update_status), "DOWNLOADING %s", manifest.version);
-    if (download_callback) download_callback(manifest.version);
-    if (!download_update(&manifest)) {
-        last_check_succeeded = false;
-        snprintf(update_status, sizeof(update_status), "UPDATE DOWNLOAD FAILED");
-        return false;
-    }
-    snprintf(update_status, sizeof(update_status), "VERIFIED %s", manifest.version);
-    return true;
-}
-
-static bool check_now(bool force_install) {
-    bool result = check_now_inner(force_install);
-    update_tls_end();
-    return result;
-}
-
 bool flightwall_update_check_now(void) {
-    return check_now(false);
+    return start_feed_check(false);
 }
 
 bool flightwall_update_check_due(void) {
+    if (update_state != UPDATE_STATE_IDLE) return false;
     uint32_t interval = last_check_succeeded ? UPDATE_INTERVAL_MS : UPDATE_RETRY_MS;
-    return now_ms() - last_check_ms >= interval && flightwall_update_check_now();
+    if (now_ms() - last_check_ms < interval) return false;
+    (void)start_feed_check(false);
+    return false;
 }
 
 void flightwall_update_request_check(void) {
-    check_requested = true;
-    snprintf(update_status, sizeof(update_status), "CHECK REQUESTED");
+    if (update_state == UPDATE_STATE_IDLE) {
+        check_requested = true;
+        snprintf(update_status, sizeof(update_status), "CHECK REQUESTED");
+    }
 }
 
 void flightwall_update_request_install(void) {
-    install_requested = true;
-    snprintf(update_status, sizeof(update_status), "INSTALL REQUESTED");
+    if (update_state == UPDATE_STATE_IDLE) {
+        install_requested = true;
+        snprintf(update_status, sizeof(update_status), "INSTALL REQUESTED");
+    }
 }
 
 bool flightwall_update_process_requests(void) {
+    if (update_state == UPDATE_STATE_FEED_PENDING)
+        return process_feed_result();
+
+    if (update_state == UPDATE_STATE_FIRMWARE_PENDING)
+        return process_firmware_result();
+
+    if (update_state == UPDATE_STATE_READY_TO_REBOOT)
+        return false;
+
     if (install_requested) {
         install_requested = false;
         check_requested = false;
-        return check_now(true);
+        (void)start_feed_check(true);
+        return false;
     }
+
     if (check_requested) {
         check_requested = false;
-        return check_now(false);
+        (void)start_feed_check(false);
+        return false;
     }
+
     return false;
+}
+
+bool flightwall_update_installing(void) {
+    return update_state == UPDATE_STATE_FIRMWARE_PENDING ||
+           update_state == UPDATE_STATE_READY_TO_REBOOT;
 }
 
 const char *flightwall_update_status(void) {
     return update_status;
 }
+
