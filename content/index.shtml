@@ -138,7 +138,7 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
 
     <form action="/update_auto.cgi" method="get">
       <label><input type="checkbox" name="enabled" value="1" <!--#autoinst-->> Automatically install signed updates</label><br>
-      <small>This preference will apply again once the automatic updater transport is restored.</small><br><br>
+      <small>When disabled, FlightWall still checks for signed updates but waits for you to install them.</small><br><br>
       <input type="submit" value="Save update preference">
     </form>
 
