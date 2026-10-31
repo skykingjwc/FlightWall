@@ -22,7 +22,7 @@
 #define UPDATE_HOST "api.github.com"
 #define UPDATE_PORT 443
 #define MANIFEST_API_PATH "/repos/skykingjwc/FlightWall/contents/update/manifest.json?ref=main"
-#define SIGNATURE_API_PATH "/repos/skykingjwc/FlightWall/contents/update/manifest.sig?ref=main"
+#define SIGNATURE_API_PATH "/repos/skykingjwc/FlightWall/contents/update/manifest.sig.hex?ref=main"
 #define BLOB_API_PREFIX "/repos/skykingjwc/FlightWall/git/blobs/"
 #define SMALL_RESPONSE_CAPACITY 4096u
 #define SIGNATURE_CAPACITY 96u
@@ -450,6 +450,19 @@ static bool json_u32(const char *json, size_t length, const char *key, uint32_t 
     return true;
 }
 
+static bool hex_bytes(const char *hex, size_t hex_length,
+                      uint8_t *output, size_t output_capacity, size_t *output_length) {
+    if (!hex || (hex_length % 2) != 0 || hex_length / 2 > output_capacity) return false;
+    size_t used = 0;
+    for (size_t i = 0; i < hex_length; i += 2) {
+        char pair[3] = {hex[i], hex[i + 1], '\0'};
+        if (!isxdigit((unsigned char)pair[0]) || !isxdigit((unsigned char)pair[1])) return false;
+        output[used++] = (uint8_t)strtoul(pair, NULL, 16);
+    }
+    *output_length = used;
+    return true;
+}
+
 static bool hex_digest(const char *hex, uint8_t output[32]) {
     if (!hex || strlen(hex) != 64) return false;
     for (size_t i = 0; i < 32; ++i) {
@@ -564,9 +577,22 @@ static bool check_now_inner(bool force_install) {
         snprintf(update_status, sizeof(update_status), "MANIFEST FETCH FAILED");
         return false;
     }
-    if (!fetch_api_file(SIGNATURE_API_PATH, signature, SIGNATURE_CAPACITY,
-                        &signature_length) || signature_length == 0) {
+    uint8_t signature_text[2 * SIGNATURE_CAPACITY + 2];
+    size_t signature_text_length = 0;
+    if (!fetch_api_file(SIGNATURE_API_PATH, signature_text, sizeof(signature_text) - 1,
+                        &signature_text_length) || signature_text_length == 0) {
         snprintf(update_status, sizeof(update_status), "SIGNATURE FETCH FAILED");
+        return false;
+    }
+    while (signature_text_length > 0 &&
+           isspace((unsigned char)signature_text[signature_text_length - 1])) {
+        signature_text_length--;
+    }
+    signature_text[signature_text_length] = '\0';
+    if (!hex_bytes((const char *)signature_text, signature_text_length,
+                   signature, SIGNATURE_CAPACITY, &signature_length) ||
+        signature_length == 0) {
+        snprintf(update_status, sizeof(update_status), "BAD SIGNATURE FORMAT");
         return false;
     }
     if (!verify_manifest_signature(manifest_bytes, manifest_length,
