@@ -773,11 +773,18 @@ int main() {
     show_wifi_status("FETCHING AIRCRAFT", "DATA FROM ADSB.FI", "PLEASE WAIT");
     flightwall_aircraft_refresh();
 
-    // Start update checks only after the first ADS-B request has completed.
-    // Both services now use the proven ECDSA-only TLS feature set.
-    flightwall_update_request_check();
+    // Give the display/network stack time to settle before the first
+    // automatic update check. Manual checks from the web UI remain immediate.
+    const uint32_t first_update_check_after_ms =
+        to_ms_since_boot(get_absolute_time()) + 120000u;
+    bool first_update_check_queued = false;
 
     while (true) {
+        if (!first_update_check_queued &&
+            (int32_t)(to_ms_since_boot(get_absolute_time()) - first_update_check_after_ms) >= 0) {
+            flightwall_update_request_check();
+            first_update_check_queued = true;
+        }
         if (flightwall_update_installing()) {
             ota_checkpoint();
             sleep_ms(100);
