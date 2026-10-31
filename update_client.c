@@ -75,6 +75,7 @@ static altcp_allocator_t tls_allocator;
 static httpc_connection_t http_connection;
 static update_request_t request;
 static uint8_t small_response[SMALL_RESPONSE_CAPACITY + 1];
+static uint8_t feed_bytes[SMALL_RESPONSE_CAPACITY + 1];
 static uint8_t manifest_bytes[2048];
 static uint8_t signature[SIGNATURE_CAPACITY];
 static uint32_t last_check_ms;
@@ -577,7 +578,7 @@ static bool check_now_inner(bool force_install) {
     size_t manifest_length = 0;
     size_t signature_length = 0;
     snprintf(update_status, sizeof(update_status), "CHECKING GITHUB API");
-    if (!fetch_api_file(FEED_API_PATH, small_response, SMALL_RESPONSE_CAPACITY,
+    if (!fetch_api_file(FEED_API_PATH, feed_bytes, SMALL_RESPONSE_CAPACITY,
                         &feed_length) || feed_length == 0) {
         snprintf(update_status, sizeof(update_status), "UPDATE FEED FAILED");
         return false;
@@ -585,9 +586,9 @@ static bool check_now_inner(bool force_install) {
 
     char manifest_b64[3072];
     char signature_hex[2 * SIGNATURE_CAPACITY + 1];
-    if (!json_string((const char *)small_response, feed_length, "manifest_b64",
+    if (!json_string((const char *)feed_bytes, feed_length, "manifest_b64",
                      manifest_b64, sizeof(manifest_b64)) ||
-        !json_string((const char *)small_response, feed_length, "signature_hex",
+        !json_string((const char *)feed_bytes, feed_length, "signature_hex",
                      signature_hex, sizeof(signature_hex))) {
         snprintf(update_status, sizeof(update_status), "BAD UPDATE FEED");
         return false;
