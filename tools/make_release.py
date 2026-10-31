@@ -12,8 +12,6 @@ import tempfile
 
 UF2_MAGIC_START0 = 0x0A324655
 UF2_MAGIC_START1 = 0x9E5D5157
-UPDATE_PATH = "/skykingjwc/FlightWall/main/update/flightwall.uf2"
-
 
 def run(command: list[str]) -> None:
     subprocess.run(command, check=True)
@@ -47,6 +45,8 @@ def main() -> int:
     payload = bytearray(full_image[512:])
     payload.extend(b"\x00" * ((-len(payload)) % 2048))
     digest = hashlib.sha256(payload).hexdigest()
+    blob_header = f"blob {len(payload)}\0".encode()
+    blob_sha = hashlib.sha1(blob_header + payload).hexdigest()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     firmware_path = args.output_dir / "flightwall.uf2"
@@ -55,9 +55,9 @@ def main() -> int:
     firmware_path.write_bytes(payload)
 
     manifest = {
+        "blob_sha": blob_sha,
         "build": args.build,
-        "path": UPDATE_PATH,
-        "schema": 1,
+        "schema": 2,
         "sha256": digest,
         "size": len(payload),
         "version": args.version,
@@ -77,6 +77,7 @@ def main() -> int:
     print(f"release {args.version} build {args.build}")
     print(f"payload {len(payload)} bytes")
     print(f"sha256 {digest}")
+    print(f"blob_sha {blob_sha}")
     return 0
 
 
