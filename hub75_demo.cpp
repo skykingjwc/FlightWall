@@ -488,11 +488,8 @@ void radar_dot(int cx, int cy, int radius, float bearing, float distance_fractio
     set_pixel(x, y, color);
 }
 
-static bool radar_grid_mask[WIDTH * HEIGHT];
-
 void mark_radar_grid_pixel(int x, int y) {
     if (x < 0 || x >= WIDTH || y < 0 || y >= HEIGHT) return;
-    radar_grid_mask[y * WIDTH + x] = true;
     set_pixel(x, y, RADAR_GRID);
 }
 
@@ -509,26 +506,32 @@ void draw_radar_grid_circle(int cx, int cy, int radius) {
     }
 }
 
-void draw_radar_sweep(int cx, int cy, int radius, float angle_degrees, Color color) {
+void draw_radar_sweep_wedge(int cx, int cy, int radius, float head_angle) {
     constexpr float pi = 3.14159265f;
-    const float angle = (angle_degrees - 90.0f) * pi / 180.0f;
-    const int x1 = static_cast<int>(std::lround(cx + std::cos(angle) * radius));
-    const int y1 = static_cast<int>(std::lround(cy + std::sin(angle) * radius));
+    constexpr float tail_width = 14.0f;
+    const int radius_squared = radius * radius;
 
-    int x0 = cx, y0 = cy;
-    const int dx = std::abs(x1 - x0);
-    const int sx = x0 < x1 ? 1 : -1;
-    const int dy = -std::abs(y1 - y0);
-    const int sy = y0 < y1 ? 1 : -1;
-    int error = dx + dy;
-    for (;;) {
-        if (x0 >= 0 && x0 < WIDTH && y0 >= 0 && y0 < HEIGHT &&
-            !radar_grid_mask[y0 * WIDTH + x0])
-            set_pixel(x0, y0, color);
-        if (x0 == x1 && y0 == y1) break;
-        const int twice_error = 2 * error;
-        if (twice_error >= dy) { error += dy; x0 += sx; }
-        if (twice_error <= dx) { error += dx; y0 += sy; }
+    for (int y = cy - radius; y <= cy + radius; ++y) {
+        for (int x = cx - radius; x <= cx + radius; ++x) {
+            const int dx = x - cx;
+            const int dy = y - cy;
+            if (dx * dx + dy * dy > radius_squared) continue;
+
+            float angle = std::atan2(static_cast<float>(dy), static_cast<float>(dx)) * 180.0f / pi + 90.0f;
+            if (angle < 0.0f) angle += 360.0f;
+
+            float behind = head_angle - angle;
+            while (behind < 0.0f) behind += 360.0f;
+            while (behind >= 360.0f) behind -= 360.0f;
+            if (behind > tail_width) continue;
+
+            Color color;
+            if (behind < 1.5f) color = RADAR_SWEEP_LEAD;
+            else if (behind < 5.0f) color = RADAR_SWEEP_MID;
+            else if (behind < 9.5f) color = RADAR_SWEEP_DIM;
+            else color = RADAR_SWEEP_FAINT;
+            set_pixel(x, y, color);
+        }
     }
 }
 
@@ -536,19 +539,16 @@ void draw_summary_frame(float sweep_angle) {
     clear();
     constexpr int cx = 30, cy = 31, radar_radius = 28;
 
-    // Build the fixed radar geometry first and remember its exact pixels.
-    // The animated sweep then skips those pixels entirely so neither the blue
-    // grid nor the green sweep appears to blink or pass underneath the other.
-    std::memset(radar_grid_mask, 0, sizeof(radar_grid_mask));
+    // Paint a continuous trailing wedge first. The fixed blue grid is drawn
+    // afterward so its circles and crosshairs stay solid instead of punching
+    // holes through the moving sweep.
+    draw_radar_sweep_wedge(cx, cy, radar_radius, sweep_angle);
+
     draw_radar_grid_circle(cx, cy, radar_radius);
     draw_radar_grid_circle(cx, cy, radar_radius / 2);
     for (int y = cy - radar_radius; y <= cy + radar_radius; ++y) mark_radar_grid_pixel(cx, y);
     for (int x = cx - radar_radius; x <= cx + radar_radius; ++x) mark_radar_grid_pixel(x, cy);
 
-    draw_radar_sweep(cx, cy, radar_radius, sweep_angle - 24.0f, RADAR_SWEEP_FAINT);
-    draw_radar_sweep(cx, cy, radar_radius, sweep_angle - 16.0f, RADAR_SWEEP_DIM);
-    draw_radar_sweep(cx, cy, radar_radius, sweep_angle - 8.0f, RADAR_SWEEP_MID);
-    draw_radar_sweep(cx, cy, radar_radius, sweep_angle, RADAR_SWEEP_LEAD);
     set_pixel(cx, cy, GREEN); set_pixel(cx - 1, cy, GREEN); set_pixel(cx + 1, cy, GREEN);
     set_pixel(cx, cy - 1, GREEN); set_pixel(cx, cy + 1, GREEN);
     size_t count = 0;
@@ -576,14 +576,22 @@ void draw_summary_frame(float sweep_angle) {
 }
 
 void show_summary() {
-    constexpr uint32_t frame_ms = 100;
+    constexpr uint32_t frame_ms = 75;
+    constexpr float degrees_per_second = 60.0f;
     const uint32_t duration_ms = static_cast<uint32_t>(flightwall_settings_get()->display_seconds) * 1000u;
-    const uint32_t frame_count = (duration_ms + frame_ms - 1) / frame_ms;
-    for (uint32_t frame = 0; frame < frame_count; ++frame) {
+    const uint32_t started_ms = to_ms_since_boot(get_absolute_time());
+
+    while (true) {
         if (flightwall_emergency_test_active() || flightwall_load_test_active()) break;
-        draw_summary_frame(static_cast<float>((frame * 6u) % 360u));
+        const uint32_t now = to_ms_since_boot(get_absolute_time());
+        const uint32_t elapsed = now - started_ms;
+        if (elapsed >= duration_ms) break;
+
+        const float sweep_angle = std::fmod(
+            static_cast<float>(now) * degrees_per_second / 1000.0f, 360.0f);
+        draw_summary_frame(sweep_angle);
         present();
-        sleep_ms(std::min<uint32_t>(frame_ms, duration_ms - frame * frame_ms));
+        sleep_ms(std::min<uint32_t>(frame_ms, duration_ms - elapsed));
     }
 }
 
