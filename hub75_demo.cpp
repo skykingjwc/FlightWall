@@ -702,13 +702,11 @@ int main() {
         sleep_ms(6000);
     }
 
+    // Diagnostic build: do not perform the automatic GitHub HTTPS check at
+    // startup. The web UI can still request update checks later through the
+    // normal queued update path. This isolates the ADS-B TLS connection from
+    // any preceding GitHub TLS activity.
     flightwall_update_init();
-    show_wifi_status("CHECKING UPDATES", "SIGNED GITHUB FEED", "PLEASE WAIT");
-    if (flightwall_update_check_now()) {
-        show_wifi_status("UPDATE VERIFIED", flightwall_update_status(), "RESTARTING");
-        while (!flightwall_ota_update_ready()) sleep_ms(50);
-        ota_checkpoint();
-    }
 
     flightwall_aircraft_init();
     show_wifi_status("FETCHING AIRCRAFT", "DATA FROM ADSB.FI", "PLEASE WAIT");
