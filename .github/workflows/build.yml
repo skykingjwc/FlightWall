@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: flightwall-main-build
+  group: flightwall-main-build-v2
   cancel-in-progress: true
 
 jobs:
