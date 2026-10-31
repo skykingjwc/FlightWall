@@ -23,6 +23,7 @@ bool flightwall_update_check_due(void);
 void flightwall_update_request_check(void);
 void flightwall_update_request_install(void);
 bool flightwall_update_process_requests(void);
+bool flightwall_update_installing(void);
 
 const char *flightwall_update_status(void);
 
