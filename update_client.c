@@ -21,8 +21,7 @@
 
 #define UPDATE_HOST "api.github.com"
 #define UPDATE_PORT 443
-#define MANIFEST_API_PATH "/repos/skykingjwc/FlightWall/contents/update/manifest.json?ref=main"
-#define SIGNATURE_API_PATH "/repos/skykingjwc/FlightWall/contents/update/manifest.sig.hex?ref=main"
+#define FEED_API_PATH "/repos/skykingjwc/FlightWall/contents/update/feed.json?ref=main"
 #define BLOB_API_PREFIX "/repos/skykingjwc/FlightWall/git/blobs/"
 #define SMALL_RESPONSE_CAPACITY 4096u
 #define SIGNATURE_CAPACITY 96u
@@ -574,27 +573,56 @@ static bool check_now_inner(bool force_install) {
         return false;
     }
 
+    size_t feed_length = 0;
     size_t manifest_length = 0;
     size_t signature_length = 0;
     snprintf(update_status, sizeof(update_status), "CHECKING GITHUB API");
-    if (!fetch_api_file(MANIFEST_API_PATH, manifest_bytes, sizeof(manifest_bytes),
-                        &manifest_length) || manifest_length == 0) {
-        snprintf(update_status, sizeof(update_status), "MANIFEST FETCH FAILED");
+    if (!fetch_api_file(FEED_API_PATH, small_response, SMALL_RESPONSE_CAPACITY,
+                        &feed_length) || feed_length == 0) {
+        snprintf(update_status, sizeof(update_status), "UPDATE FEED FAILED");
         return false;
     }
-    uint8_t signature_text[2 * SIGNATURE_CAPACITY + 2];
-    size_t signature_text_length = 0;
-    if (!fetch_api_file(SIGNATURE_API_PATH, signature_text, sizeof(signature_text) - 1,
-                        &signature_text_length) || signature_text_length == 0) {
-        snprintf(update_status, sizeof(update_status), "SIGNATURE FETCH FAILED");
+
+    char manifest_b64[3072];
+    char signature_hex[2 * SIGNATURE_CAPACITY + 1];
+    if (!json_string((const char *)small_response, feed_length, "manifest_b64",
+                     manifest_b64, sizeof(manifest_b64)) ||
+        !json_string((const char *)small_response, feed_length, "signature_hex",
+                     signature_hex, sizeof(signature_hex))) {
+        snprintf(update_status, sizeof(update_status), "BAD UPDATE FEED");
         return false;
     }
-    while (signature_text_length > 0 &&
-           isspace((unsigned char)signature_text[signature_text_length - 1])) {
-        signature_text_length--;
+
+    size_t manifest_b64_length = strlen(manifest_b64);
+    char quartet[4];
+    uint8_t quartet_count = 0;
+    for (size_t i = 0; i < manifest_b64_length; ++i) {
+        unsigned char ch = (unsigned char)manifest_b64[i];
+        if (isspace(ch)) continue;
+        if (base64_value(ch) == -1) {
+            snprintf(update_status, sizeof(update_status), "BAD MANIFEST ENCODING");
+            return false;
+        }
+        quartet[quartet_count++] = (char)ch;
+        if (quartet_count == 4) {
+            uint8_t decoded[3];
+            size_t decoded_length = 0;
+            if (!decode_base64_quartet(quartet, decoded, &decoded_length) ||
+                manifest_length + decoded_length > sizeof(manifest_bytes)) {
+                snprintf(update_status, sizeof(update_status), "BAD MANIFEST ENCODING");
+                return false;
+            }
+            memcpy(manifest_bytes + manifest_length, decoded, decoded_length);
+            manifest_length += decoded_length;
+            quartet_count = 0;
+        }
     }
-    signature_text[signature_text_length] = '\0';
-    if (!hex_bytes((const char *)signature_text, signature_text_length,
+    if (quartet_count != 0 || manifest_length == 0) {
+        snprintf(update_status, sizeof(update_status), "BAD MANIFEST ENCODING");
+        return false;
+    }
+
+    if (!hex_bytes(signature_hex, strlen(signature_hex),
                    signature, SIGNATURE_CAPACITY, &signature_length) ||
         signature_length == 0) {
         snprintf(update_status, sizeof(update_status), "BAD SIGNATURE FORMAT");
