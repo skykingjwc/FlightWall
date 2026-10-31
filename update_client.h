@@ -25,6 +25,10 @@ void flightwall_update_request_install(void);
 bool flightwall_update_process_requests(void);
 bool flightwall_update_installing(void);
 
+// True while the GitHub HTTPS client owns a live network request. Other HTTPS
+// clients (notably ADS-B) should wait until this returns false.
+bool flightwall_update_network_busy(void);
+
 const char *flightwall_update_status(void);
 
 #ifdef __cplusplus
