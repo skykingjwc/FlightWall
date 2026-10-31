@@ -10,7 +10,7 @@
 #include "pico/flash.h"
 
 #define SETTINGS_MAGIC 0x46575331u  // "FWS1"
-#define SETTINGS_VERSION 5u
+#define SETTINGS_VERSION 6u
 #define SETTINGS_FLASH_OFFSET (PICO_FLASH_BANK_STORAGE_OFFSET + FLASH_SECTOR_SIZE)
 
 typedef struct {
@@ -92,6 +92,25 @@ typedef struct {
     uint32_t checksum;
 } stored_settings_v5_t;
 
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t size;
+    float latitude;
+    float longitude;
+    uint16_t radius_nm;
+    uint8_t brightness_percent;
+    uint8_t panel_output_basis;
+    uint16_t refresh_seconds;
+    uint8_t display_seconds;
+    uint8_t radar_sweep_brightness_percent;
+    uint8_t radar_sweep_tail_degrees;
+    uint8_t auto_install_updates;
+    uint8_t watched_count;
+    char watched[FLIGHTWALL_MAX_WATCHED][FLIGHTWALL_WATCH_ID_SIZE];
+    uint32_t checksum;
+} stored_settings_v6_t;
+
 static flightwall_settings_t current_settings;
 static volatile uint32_t settings_generation;
 
@@ -123,6 +142,11 @@ static bool display_seconds_valid(unsigned seconds) {
     return seconds >= 3 && seconds <= 30;
 }
 
+static bool radar_settings_valid(unsigned brightness_percent, unsigned tail_degrees) {
+    return brightness_percent >= 10 && brightness_percent <= 100 &&
+           tail_degrees >= 4 && tail_degrees <= 30;
+}
+
 static void load_defaults(void) {
     memset(&current_settings, 0, sizeof(current_settings));
     // Public, non-residential default: Capital Region International Airport
@@ -134,6 +158,8 @@ static void load_defaults(void) {
     current_settings.panel_output_basis = 8;
     current_settings.refresh_seconds = 30;
     current_settings.display_seconds = 6;
+    current_settings.radar_sweep_brightness_percent = 50;
+    current_settings.radar_sweep_tail_degrees = 14;
     current_settings.auto_install_updates = true;
 }
 
@@ -178,7 +204,7 @@ static bool parse_watchlist(const char *text, flightwall_settings_t *settings) {
 
 static bool persist_settings(const flightwall_settings_t *settings) {
     uint8_t sector[FLASH_SECTOR_SIZE] = {0};
-    stored_settings_v5_t *stored = (stored_settings_v5_t *)sector;
+    stored_settings_v6_t *stored = (stored_settings_v6_t *)sector;
     stored->magic = SETTINGS_MAGIC;
     stored->version = SETTINGS_VERSION;
     stored->size = sizeof(*stored);
@@ -189,10 +215,12 @@ static bool persist_settings(const flightwall_settings_t *settings) {
     stored->panel_output_basis = settings->panel_output_basis;
     stored->refresh_seconds = settings->refresh_seconds;
     stored->display_seconds = settings->display_seconds;
+    stored->radar_sweep_brightness_percent = settings->radar_sweep_brightness_percent;
+    stored->radar_sweep_tail_degrees = settings->radar_sweep_tail_degrees;
     stored->auto_install_updates = settings->auto_install_updates ? 1u : 0u;
     stored->watched_count = settings->watched_count;
     memcpy(stored->watched, settings->watched, sizeof(stored->watched));
-    stored->checksum = fnv1a(stored, offsetof(stored_settings_v5_t, checksum));
+    stored->checksum = fnv1a(stored, offsetof(stored_settings_v6_t, checksum));
 
     cflash_flags_t erase_flags = {
         .flags =
@@ -229,6 +257,35 @@ void flightwall_settings_load(void) {
     bool valid = false;
 
     if (rc == BOOTROM_OK) {
+        const stored_settings_v6_t *v6 = (const stored_settings_v6_t *)sector;
+        if (v6->magic == SETTINGS_MAGIC && v6->version == SETTINGS_VERSION &&
+            v6->size == sizeof(*v6) && v6->watched_count <= FLIGHTWALL_MAX_WATCHED &&
+            v6->auto_install_updates <= 1 &&
+            v6->checksum == fnv1a(v6, offsetof(stored_settings_v6_t, checksum)) &&
+            values_valid(v6->latitude, v6->longitude, v6->radius_nm,
+                         v6->brightness_percent, v6->refresh_seconds) &&
+            panel_output_valid(v6->panel_output_basis) &&
+            display_seconds_valid(v6->display_seconds) &&
+            radar_settings_valid(v6->radar_sweep_brightness_percent,
+                                 v6->radar_sweep_tail_degrees)) {
+            current_settings.latitude = v6->latitude;
+            current_settings.longitude = v6->longitude;
+            current_settings.radius_nm = v6->radius_nm;
+            current_settings.brightness_percent = v6->brightness_percent;
+            current_settings.panel_output_basis = v6->panel_output_basis;
+            current_settings.refresh_seconds = v6->refresh_seconds;
+            current_settings.display_seconds = v6->display_seconds;
+            current_settings.radar_sweep_brightness_percent = v6->radar_sweep_brightness_percent;
+            current_settings.radar_sweep_tail_degrees = v6->radar_sweep_tail_degrees;
+            current_settings.auto_install_updates = v6->auto_install_updates != 0;
+            current_settings.watched_count = v6->watched_count;
+            memcpy(current_settings.watched, v6->watched, sizeof(v6->watched));
+            for (uint8_t i = 0; i < current_settings.watched_count; ++i)
+                current_settings.watched[i][FLIGHTWALL_WATCH_ID_SIZE - 1] = 0;
+            valid = true;
+            printf("loaded FlightWall settings v6\n");
+        }
+
         const stored_settings_v5_t *v5 = (const stored_settings_v5_t *)sector;
         if (v5->magic == SETTINGS_MAGIC && v5->version == SETTINGS_VERSION &&
             v5->size == sizeof(*v5) && v5->watched_count <= FLIGHTWALL_MAX_WATCHED &&
@@ -250,8 +307,10 @@ void flightwall_settings_load(void) {
             memcpy(current_settings.watched, v5->watched, sizeof(v5->watched));
             for (uint8_t i = 0; i < current_settings.watched_count; ++i)
                 current_settings.watched[i][FLIGHTWALL_WATCH_ID_SIZE - 1] = 0;
+            current_settings.radar_sweep_brightness_percent = 50;
+            current_settings.radar_sweep_tail_degrees = 14;
             valid = true;
-            printf("loaded FlightWall settings v5\n");
+            printf("loaded and migrated FlightWall settings v5\n");
         }
 
         const stored_settings_v1_t *v1 = (const stored_settings_v1_t *)sector;
@@ -349,10 +408,13 @@ bool flightwall_settings_update(float latitude, float longitude,
                                 unsigned radius_nm, unsigned brightness,
                                 unsigned panel_output_basis,
                                 unsigned refresh_seconds, unsigned display_seconds,
+                                unsigned radar_sweep_brightness_percent,
+                                unsigned radar_sweep_tail_degrees,
                                 const char *watchlist) {
     if (!values_valid(latitude, longitude, radius_nm, brightness, refresh_seconds) ||
         !panel_output_valid(panel_output_basis) ||
-        !display_seconds_valid(display_seconds)) {
+        !display_seconds_valid(display_seconds) ||
+        !radar_settings_valid(radar_sweep_brightness_percent, radar_sweep_tail_degrees)) {
         return false;
     }
 
@@ -364,6 +426,8 @@ bool flightwall_settings_update(float latitude, float longitude,
     updated.panel_output_basis = (uint8_t)panel_output_basis;
     updated.refresh_seconds = (uint16_t)refresh_seconds;
     updated.display_seconds = (uint8_t)display_seconds;
+    updated.radar_sweep_brightness_percent = (uint8_t)radar_sweep_brightness_percent;
+    updated.radar_sweep_tail_degrees = (uint8_t)radar_sweep_tail_degrees;
     if (!parse_watchlist(watchlist, &updated) || !persist_settings(&updated)) return false;
 
     current_settings = updated;
