@@ -167,6 +167,51 @@ const button = document.getElementById('install');
 const picker = document.getElementById('firmware');
 const progress = document.getElementById('progress');
 const status = document.getElementById('updateStatus');
+
+async function waitForFlightWallRestart() {
+  let sawOffline = false;
+  let attempts = 0;
+  const started = Date.now();
+
+  status.textContent = 'Upload complete. FlightWall is restarting...';
+
+  while (attempts++ < 90) {
+    await new Promise(resolve => setTimeout(resolve, 750));
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 650);
+
+    try {
+      const response = await fetch('/?reconnect=' + Date.now(), {
+        cache: 'no-store',
+        signal: controller.signal,
+        headers: { 'Cache-Control': 'no-cache' }
+      });
+      clearTimeout(timeout);
+
+      if (response.ok) {
+        // Normally we wait until at least one failed request proves the Pico
+        // actually rebooted. The time fallback covers an unusually fast reboot
+        // that happens entirely between two polls.
+        if (sawOffline || Date.now() - started > 15000) {
+          status.textContent = 'FlightWall is back online. Reloading...';
+          window.location.replace('/?updated=' + Date.now());
+          return;
+        }
+        status.textContent = 'Firmware uploaded. Waiting for FlightWall to restart...';
+      }
+    } catch (error) {
+      clearTimeout(timeout);
+      sawOffline = true;
+      status.textContent = 'FlightWall is restarting. Waiting for it to come back online...';
+    }
+  }
+
+  status.textContent = 'FlightWall has not come back online yet. Reload this page when it is ready.';
+  button.disabled = false;
+  picker.disabled = false;
+}
+
 button.addEventListener('click', async () => {
   const file = picker.files[0];
   if (!file) { status.textContent = 'Choose a UF2 file first.'; return; }
@@ -196,15 +241,18 @@ button.addEventListener('click', async () => {
       if (request.status >= 200 && request.status < 300 &&
           request.responseText.includes('Update received')) {
         progress.value = 100;
-        status.textContent = 'Upload complete. FlightWall is restarting...';
+        waitForFlightWallRestart();
       } else {
         status.textContent = 'Firmware was rejected. The existing version is still active.';
         button.disabled = false; picker.disabled = false;
       }
     };
     request.onerror = () => {
-      status.textContent = 'Connection ended. Check the panel; it may be restarting.';
-      button.disabled = false; picker.disabled = false;
+      // A successful flash can close the HTTP connection as the Pico begins
+      // rebooting. Start the same reconnect watcher rather than immediately
+      // treating a dropped response as a failed update.
+      progress.value = 100;
+      waitForFlightWallRestart();
     };
     request.send(body);
   } catch (error) {
