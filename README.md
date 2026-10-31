@@ -5,7 +5,7 @@ FlightWall is a self-contained live-aircraft display for a Raspberry Pi Pico
 adsb.fi open-data API and presents a rotating traffic list, a detailed nearest-
 aircraft screen, and an animated radar display.
 
-Current source release: **v1.6.8**
+Current source release: **v1.6.9**
 
 Download USB installers from the project's GitHub Releases page. Each version tag
 (v1.6.5, v1.6.6, and so on) builds and publishes a normal RP2350 USB/BOOTSEL UF2
@@ -98,6 +98,7 @@ step. The private update-signing key is intentionally never stored in GitHub.
 
 ## Documentation
 
+- [v1.6.9 release notes](RELEASE-v1.6.9.md)
 - [v1.6.8 release notes](RELEASE-v1.6.8.md)
 - [v1.6.7 release notes](RELEASE-v1.6.7.md)
 - [v1.6.6 release notes](RELEASE-v1.6.6.md)
