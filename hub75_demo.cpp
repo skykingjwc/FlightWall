@@ -273,10 +273,20 @@ bool callsign_prefix(const char *id, const char *prefix) {
 }
 
 void draw_delta_mark(int x, int y) {
+    // Delta widget: large blue upper chevron with a red lower chevron.
+    // Keep the gap tight so the mark reads as one symbol on the low-res panel.
     for (int row = 0; row < 10; ++row) {
-        const int half = row / 2;
-        for (int px = 6 - half; px <= 6 + half; ++px)
-            set_pixel(x + px, y + row, row < 7 ? RED : BLUE);
+        const int half = row;
+        for (int px = 11 - half; px <= 11 + half; ++px) {
+            const int inset = row < 5 ? 0 : (row - 4);
+            if (px < 11 - inset || px > 11 + inset)
+                set_pixel(x + px, y + row, BLUE);
+        }
+    }
+    for (int row = 0; row < 5; ++row) {
+        const int half = 9 - row * 2;
+        for (int px = 11 - half; px <= 11 + half; ++px)
+            set_pixel(x + px, y + 11 + row, RED);
     }
 }
 
@@ -334,37 +344,17 @@ void draw_frontier_mark(int x, int y) {
     draw_text(x, y + 2, "F9", GREEN);
 }
 
-const char *airline_name(const char *id) {
-    if (callsign_prefix(id, "DAL")) return "DELTA";
-    if (callsign_prefix(id, "UAL")) return "UNITED";
-    if (callsign_prefix(id, "AAL")) return "AMERICAN";
-    if (callsign_prefix(id, "UPS")) return "UPS";
-    if (callsign_prefix(id, "FDX")) return "FEDEX";
-    if (callsign_prefix(id, "SKW")) return "SKYWEST";
-    if (callsign_prefix(id, "RPA")) return "REPUBLIC";
-    if (callsign_prefix(id, "FFT")) return "FRONTIER";
-    return nullptr;
-}
-
 bool draw_airline_logo(int x, int y, const char *id) {
-    if (callsign_prefix(id, "DAL")) draw_delta_mark(x + 17, y);
-    else if (callsign_prefix(id, "UAL")) draw_united_mark(x + 18, y);
-    else if (callsign_prefix(id, "AAL")) draw_american_mark(x + 12, y);
-    else if (callsign_prefix(id, "UPS")) draw_ups_mark(x + 19, y);
-    else if (callsign_prefix(id, "FDX")) draw_fedex_mark(x + 8, y);
-    else if (callsign_prefix(id, "SKW")) draw_skywest_mark(x + 8, y);
-    else if (callsign_prefix(id, "RPA")) draw_republic_mark(x + 19, y);
-    else if (callsign_prefix(id, "FFT")) draw_frontier_mark(x + 18, y);
+    if (callsign_prefix(id, "DAL")) draw_delta_mark(x + 12, y + 1);
+    else if (callsign_prefix(id, "UAL")) draw_united_mark(x + 18, y + 2);
+    else if (callsign_prefix(id, "AAL")) draw_american_mark(x + 10, y + 2);
+    else if (callsign_prefix(id, "UPS")) draw_ups_mark(x + 19, y + 3);
+    else if (callsign_prefix(id, "FDX")) draw_fedex_mark(x + 7, y + 5);
+    else if (callsign_prefix(id, "SKW")) draw_skywest_mark(x + 7, y + 5);
+    else if (callsign_prefix(id, "RPA")) draw_republic_mark(x + 19, y + 3);
+    else if (callsign_prefix(id, "FFT")) draw_frontier_mark(x + 18, y + 5);
     else return false;
     return true;
-}
-
-void draw_airline_identity(int x, int y, int width, const char *id) {
-    if (!draw_airline_logo(x, y, id)) return;
-    const char *name = airline_name(id);
-    if (!name) return;
-    const int name_x = x + std::max(0, (width - text_width(name)) / 2);
-    draw_text(name_x, y + 12, name, WHITE);
 }
 
 void show_aircraft_list() {
@@ -439,13 +429,13 @@ void show_spotlight() {
     draw_text(1, 0, "NEAREST AIRCRAFT", stale ? RED : AMBER);
 
     // Identity band above the horizontal panel seam: text on the left, with
-    // the airline symbol raised above a centered airline name on the right.
+    // the airline symbol using the full upper-right area.
     draw_text(1, 10, plane->id, plane->watched ? YELLOW : AMBER);
     std::snprintf(line, sizeof(line), "%s%s%s", plane->type[0] ? plane->type : "TYPE ----",
                   plane->registration[0] ? " " : "",
                   plane->registration[0] ? plane->registration : "");
     draw_text(1, 20, line, CYAN);
-    draw_airline_identity(78, 8, 50, plane->id);
+    draw_airline_logo(78, 8, plane->id);
 
     // Balance the flight data across both bottom panels. The y positions leave
     // two clear rows below the seam and one clear row at the bottom edge.
