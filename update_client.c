@@ -345,20 +345,34 @@ static bool download_update(const update_manifest_t *manifest) {
 }
 
 void flightwall_update_init(void) {
-    if (tls_config) return;
-    // The signed manifest and its pinned public key authenticate updates. TLS
-    // still protects transport privacy, but certificate date validation cannot
-    // be relied upon because a Pico may boot without a trusted wall clock.
-    tls_config = altcp_tls_create_config_client(NULL, 0);
+    // Do not allocate the GitHub TLS context here. Keeping a second TLS config
+    // alive beside the ADS-B client was enough to destabilize the aircraft
+    // connection when RSA support was compiled in. The updater creates its
+    // context only for an active check/download and frees it immediately after.
     tls_allocator.alloc = tls_alloc_with_sni;
-    tls_allocator.arg = tls_config;
+    tls_allocator.arg = NULL;
 }
 
-static bool check_now(bool force_install) {
+static bool update_tls_begin(void) {
+    if (tls_config) return true;
+    tls_config = altcp_tls_create_config_client(NULL, 0);
+    if (!tls_config) return false;
+    tls_allocator.arg = tls_config;
+    return true;
+}
+
+static void update_tls_end(void) {
+    if (!tls_config) return;
+    altcp_tls_free_config(tls_config);
+    tls_config = NULL;
+    tls_allocator.arg = NULL;
+}
+
+static bool check_now_inner(bool force_install) {
     last_check_ms = now_ms();
     last_check_succeeded = false;
     flightwall_update_init();
-    if (!tls_config) {
+    if (!update_tls_begin()) {
         snprintf(update_status, sizeof(update_status), "TLS INIT FAILED");
         return false;
     }
@@ -407,6 +421,12 @@ static bool check_now(bool force_install) {
     }
     snprintf(update_status, sizeof(update_status), "VERIFIED %s", manifest.version);
     return true;
+}
+
+static bool check_now(bool force_install) {
+    bool result = check_now_inner(force_install);
+    update_tls_end();
+    return result;
 }
 
 bool flightwall_update_check_now(void) {
