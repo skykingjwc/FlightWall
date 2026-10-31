@@ -820,6 +820,11 @@ bool flightwall_update_installing(void) {
            update_state == UPDATE_STATE_READY_TO_REBOOT;
 }
 
+bool flightwall_update_network_busy(void) {
+    return update_state == UPDATE_STATE_FEED_PENDING ||
+           update_state == UPDATE_STATE_FIRMWARE_PENDING;
+}
+
 const char *flightwall_update_status(void) {
     return update_status;
 }
