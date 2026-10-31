@@ -793,7 +793,8 @@ int main() {
         }
 
         const flightwall_settings_t *current_settings = flightwall_settings_get();
-        if (flightwall_aircraft_refresh_due(current_settings->refresh_seconds))
+        if (!flightwall_update_network_busy() &&
+            flightwall_aircraft_refresh_due(current_settings->refresh_seconds))
             flightwall_aircraft_refresh();
 
         const bool data_stale = flightwall_aircraft_is_stale(current_settings->refresh_seconds);
@@ -827,14 +828,16 @@ int main() {
         show_all_aircraft_pages();
         if (flightwall_emergency_test_active() || flightwall_load_test_active()) continue;
         current_settings = flightwall_settings_get();
-        if (flightwall_aircraft_refresh_due(current_settings->refresh_seconds))
+        if (!flightwall_update_network_busy() &&
+            flightwall_aircraft_refresh_due(current_settings->refresh_seconds))
             flightwall_aircraft_refresh();
         if (flightwall_aircraft_is_stale(current_settings->refresh_seconds)) continue;
         show_spotlight();
         ota_checkpoint();
         if (flightwall_emergency_test_active() || flightwall_load_test_active()) continue;
         current_settings = flightwall_settings_get();
-        if (flightwall_aircraft_refresh_due(current_settings->refresh_seconds))
+        if (!flightwall_update_network_busy() &&
+            flightwall_aircraft_refresh_due(current_settings->refresh_seconds))
             flightwall_aircraft_refresh();
         if (flightwall_aircraft_is_stale(current_settings->refresh_seconds)) continue;
         show_summary();
