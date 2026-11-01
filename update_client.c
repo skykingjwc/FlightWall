@@ -29,6 +29,7 @@
 #define UPDATE_INTERVAL_MS (6u * 60u * 60u * 1000u)
 #define UPDATE_RETRY_MS (60u * 60u * 1000u)
 #define MAX_UPDATE_SIZE (4u * 1024u * 1024u)
+#define FIRMWARE_QUEUE_CAPACITY (64u * 1024u)
 
 typedef enum {
     REQUEST_NONE,
@@ -50,6 +51,11 @@ typedef struct {
     mbedtls_sha256_context sha;
     bool sha_active;
     size_t decoded_received;
+    size_t flashed_received;
+    volatile uint32_t queue_head;
+    volatile uint32_t queue_tail;
+    volatile uint32_t tcp_credit_pending;
+    struct altcp_pcb *firmware_pcb;
     bool blob_content_found;
     bool blob_content_done;
     bool blob_escape;
@@ -79,6 +85,7 @@ static uint8_t small_response[SMALL_RESPONSE_CAPACITY + 1];
 static uint8_t feed_bytes[SMALL_RESPONSE_CAPACITY + 1];
 static uint8_t manifest_bytes[2048];
 static uint8_t signature[SIGNATURE_CAPACITY];
+static uint8_t firmware_queue[FIRMWARE_QUEUE_CAPACITY];
 static uint32_t last_check_ms;
 static bool last_check_succeeded;
 static char update_status[48] = "NOT CHECKED";
@@ -145,11 +152,23 @@ static bool decode_base64_quartet(const char input[4], uint8_t output[3], size_t
     return true;
 }
 
-static bool firmware_write_decoded(const uint8_t *data, size_t length) {
+static uint32_t firmware_queue_used(void) {
+    return request.queue_head - request.queue_tail;
+}
+
+static uint32_t firmware_queue_free(void) {
+    return FIRMWARE_QUEUE_CAPACITY - firmware_queue_used();
+}
+
+static bool firmware_queue_decoded(const uint8_t *data, size_t length) {
     if (request.decoded_received + length > request.expected ||
-        !flightwall_ota_http_write(data, length) ||
-        mbedtls_sha256_update(&request.sha, data, length) != 0) {
+        length > firmware_queue_free()) {
         return false;
+    }
+
+    for (size_t i = 0; i < length; ++i) {
+        firmware_queue[request.queue_head % FIRMWARE_QUEUE_CAPACITY] = data[i];
+        request.queue_head++;
     }
     request.decoded_received += length;
     return true;
@@ -208,7 +227,7 @@ static bool firmware_blob_feed(const uint8_t *data, size_t length) {
             uint8_t decoded[3];
             size_t decoded_length = 0;
             if (!decode_base64_quartet(request.b64_quartet, decoded, &decoded_length) ||
-                !firmware_write_decoded(decoded, decoded_length)) {
+                !firmware_queue_decoded(decoded, decoded_length)) {
                 return false;
             }
             request.b64_count = 0;
@@ -220,24 +239,44 @@ static bool firmware_blob_feed(const uint8_t *data, size_t length) {
 static err_t receive_body(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_t err) {
     (void)arg;
     if (!p) return ERR_OK;
+
+    const uint16_t received_now = p->tot_len;
+
     if (err == ERR_OK && !request.failed) {
-        for (struct pbuf *part = p; part; part = part->next) {
-            if (request.kind == REQUEST_SMALL) {
-                if (request.received + part->len > request.capacity) {
-                    request.failed = true;
-                    break;
+        // Firmware data is decoded into a RAM queue only. Flash erase/program
+        // operations must never run from this lwIP callback context.
+        if (request.kind == REQUEST_FIRMWARE &&
+            firmware_queue_free() < received_now) {
+            request.failed = true;
+        } else {
+            for (struct pbuf *part = p; part; part = part->next) {
+                if (request.kind == REQUEST_SMALL) {
+                    if (request.received + part->len > request.capacity) {
+                        request.failed = true;
+                        break;
+                    }
+                    memcpy(request.buffer + request.received, part->payload, part->len);
+                } else if (request.kind == REQUEST_FIRMWARE) {
+                    if (!firmware_blob_feed((const uint8_t *)part->payload, part->len)) {
+                        request.failed = true;
+                        break;
+                    }
                 }
-                memcpy(request.buffer + request.received, part->payload, part->len);
-            } else if (request.kind == REQUEST_FIRMWARE) {
-                if (!firmware_blob_feed((const uint8_t *)part->payload, part->len)) {
-                    request.failed = true;
-                    break;
-                }
+                request.received += part->len;
             }
-            request.received += part->len;
         }
     }
-    altcp_recved(pcb, p->tot_len);
+
+    if (request.kind == REQUEST_FIRMWARE && !request.failed) {
+        // Withhold TCP receive-window credit until the main loop has drained
+        // queued firmware bytes to flash. This applies natural backpressure to
+        // GitHub instead of allowing the callback to outrun available RAM.
+        request.firmware_pcb = pcb;
+        request.tcp_credit_pending += received_now;
+    } else {
+        altcp_recved(pcb, received_now);
+    }
+
     pbuf_free(p);
     return request.failed ? ERR_BUF : ERR_OK;
 }
@@ -249,6 +288,7 @@ static void request_finished(void *arg, httpc_result_t result, u32_t rx_content_
     (void)err;
     request.result = result;
     request.http_status = srv_res;
+    request.firmware_pcb = NULL;
     request.done = true;
 }
 
@@ -715,13 +755,67 @@ static bool process_feed_result(void) {
     return false;
 }
 
+static bool drain_firmware_queue(void) {
+    if (request.kind != REQUEST_FIRMWARE || request.failed) return false;
+
+    // Keep each main-loop flash operation bounded. The OTA writer internally
+    // processes complete 2 KiB UF2 groups and may briefly lock out core 1.
+    size_t budget = 2048u;
+    while (budget > 0 && request.queue_tail != request.queue_head) {
+        uint32_t used = firmware_queue_used();
+        size_t contiguous = FIRMWARE_QUEUE_CAPACITY -
+                            (request.queue_tail % FIRMWARE_QUEUE_CAPACITY);
+        size_t take = used < contiguous ? used : contiguous;
+        if (take > budget) take = budget;
+
+        const uint8_t *data =
+            &firmware_queue[request.queue_tail % FIRMWARE_QUEUE_CAPACITY];
+        if (!flightwall_ota_http_write(data, take) ||
+            mbedtls_sha256_update(&request.sha, data, take) != 0) {
+            request.failed = true;
+            return false;
+        }
+
+        request.queue_tail += (uint32_t)take;
+        request.flashed_received += take;
+        budget -= take;
+    }
+
+    // Return receive-window credit only after queued data has been consumed.
+    // Take the CYW43/lwIP lock because this runs from the display/main loop.
+    if (firmware_queue_used() <= FIRMWARE_QUEUE_CAPACITY / 2u &&
+        request.tcp_credit_pending != 0) {
+        cyw43_arch_lwip_begin();
+        if (request.firmware_pcb && !request.done) {
+            uint32_t credit = request.tcp_credit_pending;
+            request.tcp_credit_pending = 0;
+            altcp_recved(request.firmware_pcb, credit);
+        }
+        cyw43_arch_lwip_end();
+    }
+
+    return true;
+}
+
 static bool process_firmware_result(void) {
-    if (!request.done) return false;
+    if (!drain_firmware_queue()) {
+        flightwall_ota_http_abort();
+        last_check_succeeded = false;
+        snprintf(update_status, sizeof(update_status), "UPDATE FLASH FAILED");
+        finish_update_session();
+        return false;
+    }
+
+    if (!request.done || request.queue_tail != request.queue_head) return false;
+
+    request.firmware_pcb = NULL;
+    request.tcp_credit_pending = 0;
 
     bool transfer_ok = request_ok() &&
                        request.blob_content_found &&
                        request.blob_content_done &&
-                       request.decoded_received == request.expected;
+                       request.decoded_received == request.expected &&
+                       request.flashed_received == request.expected;
 
     uint8_t actual_digest[32];
     bool hash_ok = false;
