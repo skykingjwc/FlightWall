@@ -8,7 +8,6 @@
 #include "lwip/altcp.h"
 #include "lwip/altcp_tls.h"
 #include "lwip/apps/http_client.h"
-#include "lwip/dns.h"
 #include "lwip/pbuf.h"
 #include "mbedtls/pk.h"
 #include "mbedtls/sha256.h"
@@ -22,10 +21,9 @@
 
 #define UPDATE_API_HOST "api.github.com"
 #define UPDATE_PORT 443
-#define FEED_API_PATH "/repos/skykingjwc/FlightWall/contents/update/feed.json?ref=main"
+#define CHECK_API_PATH "/repos/skykingjwc/FlightWall/contents/update/check.json?ref=main"
 #define BLOB_API_PREFIX "/repos/skykingjwc/FlightWall/git/blobs/"
 #define SMALL_RESPONSE_CAPACITY 4096u
-#define FEED_HTTP_CAPACITY 8192u
 #define SIGNATURE_CAPACITY 96u
 #define UPDATE_TIMEOUT_MS 60000u
 #define UPDATE_INTERVAL_MS (6u * 60u * 60u * 1000u)
@@ -77,9 +75,6 @@ static const char *tls_sni_host = UPDATE_API_HOST;
 // serialized by flightwall_update_check_now().
 static httpc_connection_t http_connection;
 static update_request_t request;
-static struct altcp_pcb *feed_pcb;
-static uint8_t feed_http_response[FEED_HTTP_CAPACITY + 1];
-static size_t feed_http_received;
 static uint8_t small_response[SMALL_RESPONSE_CAPACITY + 1];
 static uint8_t feed_bytes[SMALL_RESPONSE_CAPACITY + 1];
 static uint8_t manifest_bytes[2048];
@@ -326,181 +321,6 @@ static bool decode_chunked(uint8_t *data, size_t *length, size_t capacity) {
     return true;
 }
 
-
-static void feed_finish(httpc_result_t result) {
-    request.result = result;
-    request.done = true;
-    if (feed_pcb) {
-        altcp_arg(feed_pcb, NULL);
-        altcp_recv(feed_pcb, NULL);
-        altcp_err(feed_pcb, NULL);
-        altcp_poll(feed_pcb, NULL, 0);
-        err_t rc = altcp_close(feed_pcb);
-        if (rc != ERR_OK) altcp_abort(feed_pcb);
-        feed_pcb = NULL;
-    }
-}
-
-static err_t feed_recv(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_t err) {
-    (void)arg;
-    if (!p) {
-        if (!request.done) feed_finish(request.failed ? HTTPC_RESULT_ERR_MEM : HTTPC_RESULT_OK);
-        return ERR_OK;
-    }
-
-    if (err != ERR_OK) {
-        pbuf_free(p);
-        request.failed = true;
-        feed_finish(HTTPC_RESULT_ERR_UNKNOWN);
-        return err;
-    }
-
-    for (struct pbuf *part = p; part; part = part->next) {
-        if (feed_http_received + part->len > FEED_HTTP_CAPACITY) {
-            request.failed = true;
-            break;
-        }
-        memcpy(feed_http_response + feed_http_received, part->payload, part->len);
-        feed_http_received += part->len;
-    }
-
-    altcp_recved(pcb, p->tot_len);
-    pbuf_free(p);
-
-    if (request.failed) {
-        feed_finish(HTTPC_RESULT_ERR_MEM);
-        return ERR_BUF;
-    }
-    return ERR_OK;
-}
-
-static void feed_error(void *arg, err_t err) {
-    (void)arg;
-    feed_pcb = NULL;
-    if (!request.done) {
-        request.failed = true;
-        request.result = err == ERR_TIMEOUT ? HTTPC_RESULT_ERR_TIMEOUT : HTTPC_RESULT_ERR_CONNECT;
-        request.done = true;
-    }
-}
-
-static err_t feed_poll(void *arg, struct altcp_pcb *pcb) {
-    (void)arg;
-    (void)pcb;
-    return ERR_OK;
-}
-
-static err_t feed_connected(void *arg, struct altcp_pcb *pcb, err_t err) {
-    (void)arg;
-    if (err != ERR_OK) {
-        request.failed = true;
-        feed_finish(HTTPC_RESULT_ERR_CONNECT);
-        return err;
-    }
-
-    static const char feed_request[] =
-        "GET " FEED_API_PATH " HTTP/1.1\r\n"
-        "Host: " UPDATE_API_HOST "\r\n"
-        "User-Agent: FlightWall/" FLIGHTWALL_VERSION "\r\n"
-        "Accept: application/vnd.github.raw+json\r\n"
-        "X-GitHub-Api-Version: 2022-11-28\r\n"
-        "Connection: close\r\n"
-        "\r\n";
-
-    err_t rc = altcp_write(pcb, feed_request, (u16_t)(sizeof(feed_request) - 1), TCP_WRITE_FLAG_COPY);
-    if (rc == ERR_OK) rc = altcp_output(pcb);
-    if (rc != ERR_OK) {
-        request.failed = true;
-        feed_finish(HTTPC_RESULT_ERR_CONNECT);
-    }
-    return rc;
-}
-
-static void feed_dns_found(const char *name, const ip_addr_t *ipaddr, void *arg) {
-    (void)name;
-    (void)arg;
-
-    // This callback is either invoked by lwIP itself or called synchronously
-    // while cyw43_arch_lwip_begin() is held for a cached DNS result.
-    cyw43_arch_lwip_check();
-
-    if (!ipaddr) {
-        request.failed = true;
-        request.result = HTTPC_RESULT_ERR_HOSTNAME;
-        request.done = true;
-        return;
-    }
-
-    tls_sni_host = UPDATE_API_HOST;
-    feed_pcb = altcp_new_ip_type(&tls_allocator, IP_GET_TYPE(ipaddr));
-    if (!feed_pcb) {
-        request.failed = true;
-        request.result = HTTPC_RESULT_ERR_MEM;
-        request.done = true;
-        return;
-    }
-
-    altcp_arg(feed_pcb, NULL);
-    altcp_recv(feed_pcb, feed_recv);
-    altcp_err(feed_pcb, feed_error);
-    altcp_poll(feed_pcb, feed_poll, 4);
-
-    err_t rc = altcp_connect(feed_pcb, ipaddr, UPDATE_PORT, feed_connected);
-    if (rc != ERR_OK) {
-        request.failed = true;
-        feed_finish(HTTPC_RESULT_ERR_CONNECT);
-    }
-}
-
-static bool start_feed_get(void) {
-    feed_http_received = 0;
-    feed_http_response[0] = '\0';
-
-    ip_addr_t address;
-    cyw43_arch_lwip_begin();
-    err_t rc = dns_gethostbyname(UPDATE_API_HOST, &address, feed_dns_found, NULL);
-
-    // dns_gethostbyname() returns ERR_OK immediately when the name is already
-    // cached. In that case there is no asynchronous callback, so create and
-    // connect the altcp/TLS PCB *before* releasing the lwIP lock.
-    if (rc == ERR_OK) {
-        feed_dns_found(UPDATE_API_HOST, &address, NULL);
-    }
-    cyw43_arch_lwip_end();
-
-    if (rc == ERR_OK) return !request.done;
-    if (rc == ERR_INPROGRESS) return true;
-
-    request.failed = true;
-    request.result = HTTPC_RESULT_ERR_HOSTNAME;
-    request.done = true;
-    return false;
-}
-
-static bool parse_feed_http_response(size_t *body_offset, size_t *body_length) {
-    if (!body_offset || !body_length || feed_http_received == 0 ||
-        feed_http_received > FEED_HTTP_CAPACITY) return false;
-
-    feed_http_response[feed_http_received] = '\0';
-
-    char *status_end = strstr((char *)feed_http_response, "\r\n");
-    char *headers_end = strstr((char *)feed_http_response, "\r\n\r\n");
-    if (!status_end || !headers_end) return false;
-
-    unsigned status = 0;
-    if (sscanf((char *)feed_http_response, "HTTP/%*u.%*u %u", &status) != 1)
-        return false;
-    request.http_status = status;
-    if (status != 200) return false;
-
-    size_t offset = (size_t)((headers_end + 4) - (char *)feed_http_response);
-    if (offset > feed_http_received) return false;
-
-    *body_offset = offset;
-    *body_length = feed_http_received - offset;
-    return *body_length > 0;
-}
-
 static bool start_get(const char *host, const char *path) {
     tls_sni_host = host;
     memset(&http_connection, 0, sizeof(http_connection));
@@ -729,7 +549,7 @@ static bool start_feed_check(bool force_install) {
     request.result = HTTPC_RESULT_ERR_UNKNOWN;
 
     snprintf(update_status, sizeof(update_status), "CHECKING GITHUB API");
-    if (!start_feed_get()) {
+    if (!start_get(UPDATE_API_HOST, CHECK_API_PATH)) {
         snprintf(update_status, sizeof(update_status), "UPDATE FEED START FAILED");
         update_tls_end();
         return false;
@@ -801,42 +621,59 @@ static bool start_firmware_download(const update_manifest_t *manifest) {
 static bool process_feed_result(void) {
     if (!request.done) return false;
 
-    if (request.failed || request.result != HTTPC_RESULT_OK) {
+    if (!request_ok()) {
         snprintf(update_status, sizeof(update_status), "FEED HTTP %lu ERR %d",
                  (unsigned long)request.http_status, (int)request.result);
         finish_update_session();
         return false;
     }
 
-    size_t body_offset = 0;
-    size_t feed_length = 0;
-    if (!parse_feed_http_response(&body_offset, &feed_length)) {
-        snprintf(update_status, sizeof(update_status), "FEED HTTP %lu ERR %d",
-                 (unsigned long)request.http_status, (int)request.result);
+    size_t response_length = request.received;
+    if (!request.content_length_known &&
+        !decode_chunked(small_response, &response_length, SMALL_RESPONSE_CAPACITY)) {
+        snprintf(update_status, sizeof(update_status), "BAD UPDATE RESPONSE");
         finish_update_session();
         return false;
     }
 
-    const char *feed_json = (const char *)feed_http_response + body_offset;
+    size_t envelope_length = 0;
+    if (!decode_base64_json_field(small_response, response_length, "content",
+                                  feed_bytes, SMALL_RESPONSE_CAPACITY, &envelope_length) ||
+        envelope_length == 0) {
+        snprintf(update_status, sizeof(update_status), "UPDATE FEED DECODE FAILED");
+        finish_update_session();
+        return false;
+    }
 
-    char manifest_b64[3072];
+    const char *envelope = (const char *)feed_bytes;
     char signature_hex[2 * SIGNATURE_CAPACITY + 1];
-    if (!json_string(feed_json, feed_length, "manifest_b64",
-                     manifest_b64, sizeof(manifest_b64)) ||
-        !json_string(feed_json, feed_length, "signature_hex",
+    char sha_text[65];
+
+    update_manifest_t manifest;
+    if (!parse_manifest(feed_bytes, envelope_length, &manifest) ||
+        !json_string(envelope, envelope_length, "sha256", sha_text, sizeof(sha_text)) ||
+        !json_string(envelope, envelope_length, "signature_hex",
                      signature_hex, sizeof(signature_hex))) {
         snprintf(update_status, sizeof(update_status), "BAD UPDATE FEED");
         finish_update_session();
         return false;
     }
 
-    size_t manifest_length = 0;
-    size_t signature_length = 0;
-    if (!decode_manifest_b64(manifest_b64, &manifest_length)) {
-        snprintf(update_status, sizeof(update_status), "BAD MANIFEST ENCODING");
+    int manifest_length = snprintf((char *)manifest_bytes, sizeof(manifest_bytes),
+        "{\"blob_sha\":\"%s\",\"build\":%lu,\"schema\":2,"
+        "\"sha256\":\"%s\",\"size\":%lu,\"version\":\"%s\"}\n",
+        manifest.blob_sha,
+        (unsigned long)manifest.build,
+        sha_text,
+        (unsigned long)manifest.size,
+        manifest.version);
+    if (manifest_length <= 0 || (size_t)manifest_length >= sizeof(manifest_bytes)) {
+        snprintf(update_status, sizeof(update_status), "BAD MANIFEST REBUILD");
         finish_update_session();
         return false;
     }
+
+    size_t signature_length = 0;
     if (!hex_bytes(signature_hex, strlen(signature_hex),
                    signature, SIGNATURE_CAPACITY, &signature_length) ||
         signature_length == 0) {
@@ -844,16 +681,10 @@ static bool process_feed_result(void) {
         finish_update_session();
         return false;
     }
-    if (!verify_manifest_signature(manifest_bytes, manifest_length,
+
+    if (!verify_manifest_signature(manifest_bytes, (size_t)manifest_length,
                                    signature, signature_length)) {
         snprintf(update_status, sizeof(update_status), "BAD UPDATE SIGNATURE");
-        finish_update_session();
-        return false;
-    }
-
-    update_manifest_t manifest;
-    if (!parse_manifest(manifest_bytes, manifest_length, &manifest)) {
-        snprintf(update_status, sizeof(update_status), "BAD UPDATE MANIFEST");
         finish_update_session();
         return false;
     }
