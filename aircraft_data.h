@@ -29,6 +29,8 @@ typedef struct {
 
 void flightwall_aircraft_init(void);
 bool flightwall_aircraft_refresh(void);
+bool flightwall_aircraft_process(void);
+bool flightwall_aircraft_refresh_active(void);
 bool flightwall_aircraft_refresh_due(uint32_t refresh_seconds);
 const flightwall_aircraft_t *flightwall_aircraft_list(size_t *count);
 const flightwall_aircraft_t *flightwall_aircraft_nearest(void);
