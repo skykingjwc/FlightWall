@@ -420,6 +420,10 @@ static void feed_dns_found(const char *name, const ip_addr_t *ipaddr, void *arg)
     (void)name;
     (void)arg;
 
+    // This callback is either invoked by lwIP itself or called synchronously
+    // while cyw43_arch_lwip_begin() is held for a cached DNS result.
+    cyw43_arch_lwip_check();
+
     if (!ipaddr) {
         request.failed = true;
         request.result = HTTPC_RESULT_ERR_HOSTNAME;
@@ -455,12 +459,16 @@ static bool start_feed_get(void) {
     ip_addr_t address;
     cyw43_arch_lwip_begin();
     err_t rc = dns_gethostbyname(UPDATE_API_HOST, &address, feed_dns_found, NULL);
-    cyw43_arch_lwip_end();
 
+    // dns_gethostbyname() returns ERR_OK immediately when the name is already
+    // cached. In that case there is no asynchronous callback, so create and
+    // connect the altcp/TLS PCB *before* releasing the lwIP lock.
     if (rc == ERR_OK) {
         feed_dns_found(UPDATE_API_HOST, &address, NULL);
-        return !request.done;
     }
+    cyw43_arch_lwip_end();
+
+    if (rc == ERR_OK) return !request.done;
     if (rc == ERR_INPROGRESS) return true;
 
     request.failed = true;
