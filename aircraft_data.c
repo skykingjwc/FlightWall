@@ -37,6 +37,9 @@ static volatile bool request_done;
 static volatile bool request_overflow;
 static volatile httpc_result_t request_result;
 static volatile uint32_t request_http_status;
+static bool request_active;
+static uint32_t request_started_ms;
+static httpc_connection_t http_connection;
 static uint32_t last_attempt_ms;
 static uint32_t last_success_ms;
 static bool has_success;
@@ -334,11 +337,14 @@ void flightwall_aircraft_init(void) {
 }
 
 bool flightwall_aircraft_refresh(void) {
+    if (request_active) return false;
+
     flightwall_aircraft_init();
     if (!tls_config) {
         snprintf(status_text, sizeof(status_text), "TLS INIT FAILED");
         return false;
     }
+
     const flightwall_settings_t *settings = flightwall_settings_get();
     char uri[128];
     snprintf(uri, sizeof(uri), "/api/v3/lat/%.4f/lon/%.4f/dist/%u",
@@ -350,28 +356,42 @@ bool flightwall_aircraft_refresh(void) {
     request_result = HTTPC_RESULT_ERR_UNKNOWN;
     request_http_status = 0;
     last_attempt_ms = now_ms();
+    request_started_ms = last_attempt_ms;
     snprintf(status_text, sizeof(status_text), "FETCHING");
 
-    httpc_connection_t connection = {0};
-    connection.altcp_allocator = &tls_allocator;
-    connection.result_fn = request_finished;
-    connection.headers_done_fn = headers_received;
+    memset(&http_connection, 0, sizeof(http_connection));
+    http_connection.altcp_allocator = &tls_allocator;
+    http_connection.result_fn = request_finished;
+    http_connection.headers_done_fn = headers_received;
 
     cyw43_arch_lwip_begin();
-    err_t start_result = httpc_get_file_dns(API_HOST, API_PORT, uri, &connection,
+    err_t start_result = httpc_get_file_dns(API_HOST, API_PORT, uri, &http_connection,
                                             receive_body, NULL, NULL);
     cyw43_arch_lwip_end();
+
     if (start_result != ERR_OK) {
         snprintf(status_text, sizeof(status_text), "START ERROR %d", start_result);
         return false;
     }
 
-    uint32_t started = now_ms();
-    while (!request_done && now_ms() - started < FETCH_TIMEOUT_MS) sleep_ms(20);
+    request_active = true;
+    return true;
+}
+
+bool flightwall_aircraft_process(void) {
+    if (!request_active) return false;
+
+    // The lwIP callbacks run in the CYW43 background context. Do all JSON
+    // parsing and publication from the main loop after the request has fully
+    // completed so the display code never observes a half-updated aircraft list.
     if (!request_done) {
-        snprintf(status_text, sizeof(status_text), "API TIMEOUT");
+        if (now_ms() - request_started_ms >= FETCH_TIMEOUT_MS)
+            snprintf(status_text, sizeof(status_text), "FETCHING SLOW");
         return false;
     }
+
+    request_active = false;
+
     if (request_overflow) {
         snprintf(status_text, sizeof(status_text), "RESPONSE TOO LARGE");
         return false;
@@ -385,6 +405,7 @@ bool flightwall_aircraft_refresh(void) {
         snprintf(status_text, sizeof(status_text), "JSON ERROR");
         return false;
     }
+
     has_success = true;
     last_success_ms = now_ms();
     snprintf(status_text, sizeof(status_text), "LIVE %u AIRCRAFT", (unsigned)aircraft_count);
@@ -393,8 +414,12 @@ bool flightwall_aircraft_refresh(void) {
     return true;
 }
 
+bool flightwall_aircraft_refresh_active(void) {
+    return request_active;
+}
+
 bool flightwall_aircraft_refresh_due(uint32_t refresh_seconds) {
-    return now_ms() - last_attempt_ms >= refresh_seconds * 1000u;
+    return !request_active && now_ms() - last_attempt_ms >= refresh_seconds * 1000u;
 }
 
 const flightwall_aircraft_t *flightwall_aircraft_list(size_t *count) {
