@@ -227,8 +227,15 @@ void ota_checkpoint() {
         driver.setIntensity(settings->brightness_percent / 100.0f);
         applied_settings_generation = generation;
     }
-    if (!flightwall_ota_update_ready()) (void)flightwall_update_process_requests();
-    if (!flightwall_ota_update_ready()) (void)flightwall_update_check_due();
+    (void)flightwall_aircraft_process();
+
+    // Never start/process a GitHub HTTPS request while the ADS-B HTTPS client
+    // still owns a live request. Queued update requests simply wait for the
+    // aircraft fetch to complete.
+    if (!flightwall_ota_update_ready() && !flightwall_aircraft_refresh_active())
+        (void)flightwall_update_process_requests();
+    if (!flightwall_ota_update_ready() && !flightwall_aircraft_refresh_active())
+        (void)flightwall_update_check_due();
     if (!flightwall_ota_update_ready()) return;
     clear();
     centered_text(16, "UPDATE RECEIVED", AMBER);
@@ -243,6 +250,7 @@ void normal_screen_delay() {
     const uint32_t duration_ms = static_cast<uint32_t>(flightwall_settings_get()->display_seconds) * 1000u;
     for (uint32_t elapsed = 0; elapsed < duration_ms; elapsed += 100u) {
         if (flightwall_emergency_test_active() || flightwall_load_test_active()) break;
+        (void)flightwall_aircraft_process();
         sleep_ms(std::min<uint32_t>(100, duration_ms - elapsed));
     }
 }
@@ -635,6 +643,7 @@ void show_summary() {
 
     while (true) {
         if (flightwall_emergency_test_active() || flightwall_load_test_active()) break;
+        (void)flightwall_aircraft_process();
         const uint32_t now = to_ms_since_boot(get_absolute_time());
         const uint32_t elapsed = now - started_ms;
         if (elapsed >= duration_ms) break;
@@ -780,8 +789,11 @@ int main() {
     bool first_update_check_queued = false;
 
     while (true) {
+        (void)flightwall_aircraft_process();
+
         if (!first_update_check_queued &&
             !flightwall_ota_transfer_active() &&
+            !flightwall_aircraft_refresh_active() &&
             (int32_t)(to_ms_since_boot(get_absolute_time()) - first_update_check_after_ms) >= 0) {
             flightwall_update_request_check();
             first_update_check_queued = true;
