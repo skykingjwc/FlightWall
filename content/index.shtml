@@ -142,9 +142,7 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
       <input type="submit" value="Save update preference">
     </form>
 
-    <form action="/check_update.cgi" method="get">
-      <input type="submit" value="Check for update">
-    </form>
+    <p><button id="checkUpdate" type="button">Check for update</button></p>
 
     <form action="/install_update.cgi" method="get" onsubmit="return confirm('Install the newest signed FlightWall update if one is available?');">
       <input type="submit" value="Install available update">
@@ -163,10 +161,57 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
   </section>
 </main>
 <script>
+const checkUpdateButton = document.getElementById('checkUpdate');
+const autoUpdateStatus = document.getElementById('autoUpdateStatus');
 const button = document.getElementById('install');
 const picker = document.getElementById('firmware');
 const progress = document.getElementById('progress');
 const status = document.getElementById('updateStatus');
+
+async function refreshUpdateStatus() {
+  const response = await fetch('/index.shtml?status=' + Date.now(), {
+    cache: 'no-store',
+    headers: {
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache'
+    }
+  });
+  if (!response.ok) throw new Error('status request failed');
+  const page = await response.text();
+  const doc = new DOMParser().parseFromString(page, 'text/html');
+  const value = doc.getElementById('autoUpdateStatus');
+  if (value) autoUpdateStatus.textContent = value.textContent;
+  return value ? value.textContent.trim() : '';
+}
+
+checkUpdateButton.addEventListener('click', async () => {
+  checkUpdateButton.disabled = true;
+  autoUpdateStatus.textContent = 'CHECK REQUESTED';
+
+  try {
+    await fetch('/check_update.cgi?ts=' + Date.now(), {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache'
+      }
+    });
+
+    for (let attempt = 0; attempt < 60; ++attempt) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+      const value = await refreshUpdateStatus();
+      if (value &&
+          value !== 'CHECK REQUESTED' &&
+          value !== 'CHECKING GITHUB API') {
+        break;
+      }
+    }
+  } catch (error) {
+    autoUpdateStatus.textContent = 'CHECK FAILED';
+  } finally {
+    checkUpdateButton.disabled = false;
+  }
+});
 
 async function waitForFlightWallRestart() {
   let sawOffline = false;
