@@ -854,6 +854,9 @@ void flightwall_update_set_download_callback(flightwall_update_download_callback
 void flightwall_update_init(void) {
     tls_allocator.alloc = tls_alloc_with_sni;
     tls_allocator.arg = NULL;
+    const char *boot_diag = flightwall_ota_boot_diagnostic();
+    if (boot_diag && strcmp(boot_diag, "none") != 0)
+        snprintf(update_status, sizeof(update_status), "%s", boot_diag);
 }
 
 static bool update_tls_begin(void) {
