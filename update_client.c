@@ -97,11 +97,13 @@ typedef enum {
     UPDATE_STATE_IDLE,
     UPDATE_STATE_FEED_PENDING,
     UPDATE_STATE_FIRMWARE_PENDING,
-    UPDATE_STATE_READY_TO_REBOOT
+    UPDATE_STATE_READY_TO_REBOOT,
+    UPDATE_STATE_RECOVERY_REBOOT
 } update_state_t;
 
 static update_state_t update_state = UPDATE_STATE_IDLE;
 static bool pending_force_install;
+static uint64_t recovery_reboot_at_us;
 static update_manifest_t pending_manifest;
 
 static uint32_t now_ms(void) {
@@ -799,10 +801,14 @@ static bool drain_firmware_queue(void) {
 
 static bool process_firmware_result(void) {
     if (!drain_firmware_queue()) {
+        const char *detail = flightwall_ota_last_error();
+        printf("FlightWall update flash failure: %s\n", detail ? detail : "unknown");
         flightwall_ota_http_abort();
         last_check_succeeded = false;
-        snprintf(update_status, sizeof(update_status), "UPDATE FLASH FAILED");
-        finish_update_session();
+        update_tls_end();
+        snprintf(update_status, sizeof(update_status), "FLASH FAILED - REBOOTING");
+        recovery_reboot_at_us = time_us_64() + 2000000u;
+        update_state = UPDATE_STATE_RECOVERY_REBOOT;
         return false;
     }
 
@@ -901,6 +907,12 @@ bool flightwall_update_process_requests(void) {
     if (update_state == UPDATE_STATE_READY_TO_REBOOT)
         return false;
 
+    if (update_state == UPDATE_STATE_RECOVERY_REBOOT) {
+        if (time_us_64() >= recovery_reboot_at_us)
+            flightwall_ota_reboot_current();
+        return false;
+    }
+
     if (install_requested) {
         install_requested = false;
         check_requested = false;
@@ -919,7 +931,8 @@ bool flightwall_update_process_requests(void) {
 
 bool flightwall_update_installing(void) {
     return update_state == UPDATE_STATE_FIRMWARE_PENDING ||
-           update_state == UPDATE_STATE_READY_TO_REBOOT;
+           update_state == UPDATE_STATE_READY_TO_REBOOT ||
+           update_state == UPDATE_STATE_RECOVERY_REBOOT;
 }
 
 bool flightwall_update_network_busy(void) {
