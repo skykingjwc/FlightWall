@@ -28,6 +28,10 @@ void flightwall_ota_http_abort(void);
 // and UF2 block number.
 const char *flightwall_ota_last_error(void);
 
+// Boot/update diagnostic retained across the reboot attempt. A rollback-capable
+// image can expose this after the ROM falls back to the previous partition.
+const char *flightwall_ota_boot_diagnostic(void);
+
 // Reboot the currently running known-good image after a staging failure. This
 // does not request a FLASH_UPDATE boot into the partially written partition.
 void flightwall_ota_reboot_current(void);
