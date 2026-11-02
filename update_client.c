@@ -115,38 +115,6 @@ static struct altcp_pcb *tls_alloc_with_sni(void *arg, u8_t ip_type) {
 }
 
 
-static int base64_value(unsigned char c) {
-    if (c >= 'A' && c <= 'Z') return c - 'A';
-    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-    if (c >= '0' && c <= '9') return c - '0' + 52;
-    if (c == '+') return 62;
-    if (c == '/') return 63;
-    if (c == '=') return -2;
-    return -1;
-}
-
-static bool decode_base64_quartet(const char input[4], uint8_t output[3], size_t *output_length) {
-    int v0 = base64_value((unsigned char)input[0]);
-    int v1 = base64_value((unsigned char)input[1]);
-    int v2 = base64_value((unsigned char)input[2]);
-    int v3 = base64_value((unsigned char)input[3]);
-    if (v0 < 0 || v1 < 0 || v2 == -1 || v3 == -1) return false;
-    output[0] = (uint8_t)((v0 << 2) | (v1 >> 4));
-    if (v2 == -2) {
-        if (v3 != -2) return false;
-        *output_length = 1;
-        return true;
-    }
-    output[1] = (uint8_t)(((v1 & 0x0f) << 4) | (v2 >> 2));
-    if (v3 == -2) {
-        *output_length = 2;
-        return true;
-    }
-    output[2] = (uint8_t)(((v2 & 0x03) << 6) | v3);
-    *output_length = 3;
-    return true;
-}
-
 static void request_fail(const char *reason) {
     request.failed = true;
     if (reason && reason[0] && request.failure_reason[0] == '\0')
@@ -484,33 +452,6 @@ static bool start_feed_check(bool force_install) {
 
     update_state = UPDATE_STATE_FEED_PENDING;
     return true;
-}
-
-static bool decode_manifest_b64(const char *manifest_b64, size_t *manifest_length) {
-    *manifest_length = 0;
-    char quartet[4];
-    uint8_t quartet_count = 0;
-
-    for (size_t i = 0; manifest_b64[i]; ++i) {
-        unsigned char ch = (unsigned char)manifest_b64[i];
-        if (isspace(ch)) continue;
-        if (base64_value(ch) == -1) return false;
-
-        quartet[quartet_count++] = (char)ch;
-        if (quartet_count == 4) {
-            uint8_t decoded[3];
-            size_t decoded_length = 0;
-            if (!decode_base64_quartet(quartet, decoded, &decoded_length) ||
-                *manifest_length + decoded_length > sizeof(manifest_bytes)) {
-                return false;
-            }
-            memcpy(manifest_bytes + *manifest_length, decoded, decoded_length);
-            *manifest_length += decoded_length;
-            quartet_count = 0;
-        }
-    }
-
-    return quartet_count == 0 && *manifest_length > 0;
 }
 
 static bool start_firmware_download(const update_manifest_t *manifest) {
