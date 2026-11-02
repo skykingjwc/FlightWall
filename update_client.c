@@ -63,6 +63,7 @@ typedef struct {
     uint8_t blob_key_match;
     char b64_quartet[4];
     uint8_t b64_count;
+    char failure_reason[32];
 } update_request_t;
 
 typedef struct {
@@ -154,6 +155,12 @@ static bool decode_base64_quartet(const char input[4], uint8_t output[3], size_t
     return true;
 }
 
+static void request_fail(const char *reason) {
+    request.failed = true;
+    if (reason && reason[0] && request.failure_reason[0] == '\0')
+        snprintf(request.failure_reason, sizeof(request.failure_reason), "%s", reason);
+}
+
 static uint32_t firmware_queue_used(void) {
     return request.queue_head - request.queue_tail;
 }
@@ -163,8 +170,12 @@ static uint32_t firmware_queue_free(void) {
 }
 
 static bool firmware_queue_decoded(const uint8_t *data, size_t length) {
-    if (request.decoded_received + length > request.expected ||
-        length > firmware_queue_free()) {
+    if (request.decoded_received + length > request.expected) {
+        request_fail("DECODE SIZE");
+        return false;
+    }
+    if (length > firmware_queue_free()) {
+        request_fail("RX QUEUE FULL");
         return false;
     }
 
@@ -249,7 +260,7 @@ static err_t receive_body(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_
         // operations must never run from this lwIP callback context.
         if (request.kind == REQUEST_FIRMWARE &&
             firmware_queue_free() < received_now) {
-            request.failed = true;
+            request_fail("RX QUEUE FULL");
         } else {
             for (struct pbuf *part = p; part; part = part->next) {
                 if (request.kind == REQUEST_SMALL) {
@@ -260,7 +271,7 @@ static err_t receive_body(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_
                     memcpy(request.buffer + request.received, part->payload, part->len);
                 } else if (request.kind == REQUEST_FIRMWARE) {
                     if (!firmware_blob_feed((const uint8_t *)part->payload, part->len)) {
-                        request.failed = true;
+                        request_fail("BLOB DECODE");
                         break;
                     }
                 }
@@ -772,9 +783,12 @@ static bool drain_firmware_queue(void) {
 
         const uint8_t *data =
             &firmware_queue[request.queue_tail % FIRMWARE_QUEUE_CAPACITY];
-        if (!flightwall_ota_http_write(data, take) ||
-            mbedtls_sha256_update(&request.sha, data, take) != 0) {
-            request.failed = true;
+        if (!flightwall_ota_http_write(data, take)) {
+            request_fail("OTA WRITE");
+            return false;
+        }
+        if (mbedtls_sha256_update(&request.sha, data, take) != 0) {
+            request_fail("SHA UPDATE");
             return false;
         }
 
@@ -801,12 +815,21 @@ static bool drain_firmware_queue(void) {
 
 static bool process_firmware_result(void) {
     if (!drain_firmware_queue()) {
-        const char *detail = flightwall_ota_last_error();
-        printf("FlightWall update flash failure: %s\n", detail ? detail : "unknown");
+        const char *flash_detail = flightwall_ota_last_error();
+        const char *reason = request.failure_reason[0] ? request.failure_reason : "UNKNOWN";
+        printf("FlightWall update staging failure: %s; flash=%s\n",
+               reason, flash_detail ? flash_detail : "none");
         flightwall_ota_http_abort();
         last_check_succeeded = false;
         update_tls_end();
-        snprintf(update_status, sizeof(update_status), "FLASH FAILED - REBOOTING");
+
+        if (strcmp(reason, "OTA WRITE") == 0 &&
+            flash_detail && strcmp(flash_detail, "none") != 0) {
+            snprintf(update_status, sizeof(update_status), "FLASH FAILED - REBOOTING");
+        } else {
+            snprintf(update_status, sizeof(update_status), "%s - REBOOTING", reason);
+        }
+
         recovery_reboot_at_us = time_us_64() + 2000000u;
         update_state = UPDATE_STATE_RECOVERY_REBOOT;
         return false;
