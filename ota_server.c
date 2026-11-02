@@ -14,6 +14,7 @@
 #include "pico/bootrom.h"
 #include "pico/multicore.h"
 #include "hardware/watchdog.h"
+#include "hardware/structs/watchdog.h"
 #include "boot/picobin.h"
 #include "boot/picoboot.h"
 #include "boot/uf2.h"
@@ -54,6 +55,8 @@ typedef struct TCP_UPDATE_SERVER_T_ {
 typedef struct uf2_block uf2_block_t;
 static TCP_UPDATE_SERVER_T *ota_state;
 static char ota_last_error[160] = "none";
+static char ota_boot_diag[96] = "none";
+#define OTA_REBOOT_MAGIC 0x46574f54u
 
 static void ota_record_error(const char *stage, int rc, uint32_t block_no, uintptr_t destination) {
     snprintf(ota_last_error, sizeof(ota_last_error),
@@ -384,6 +387,8 @@ static bool tcp_update_server_open(void *arg) {
 }
 
 void flightwall_ota_confirm_running_image(void) {
+    uint32_t marker = watchdog_hw->scratch[0];
+    uint32_t target = watchdog_hw->scratch[1];
 #ifdef __riscv
     // Increased bootrom stack is required for some of the functions in this example
     bootrom_stack_t stack = {
@@ -397,13 +402,25 @@ void flightwall_ota_confirm_running_image(void) {
     printf("Boot partition was %d\n", boot_info.partition);
 
     if (rom_get_last_boot_type() == BOOT_TYPE_FLASH_UPDATE) {
+        snprintf(ota_boot_diag, sizeof(ota_boot_diag), "UPDATE BOOT TARGET 0x%08lx", (unsigned long)target);
         printf("Someone updated into me\n");
         if (boot_info.reboot_params[0]) printf("Flash update base was %x\n", boot_info.reboot_params[0]);
         if (boot_info.tbyb_and_update_info) printf("Update info %x\n", boot_info.tbyb_and_update_info);
         ret = rom_explicit_buy(workarea, sizeof(workarea));
-        if (ret) printf("Buy returned %d\n", ret);
+        if (ret) {
+            printf("Buy returned %d\n", ret);
+            snprintf(ota_boot_diag, sizeof(ota_boot_diag), "BUY FAILED rc=%d", ret);
+        } else {
+            snprintf(ota_boot_diag, sizeof(ota_boot_diag), "UPDATE BOOT COMMITTED");
+            watchdog_hw->scratch[0] = 0;
+            watchdog_hw->scratch[1] = 0;
+        }
         ret = rom_get_boot_info(&boot_info);
         if (boot_info.tbyb_and_update_info) printf("Update info now %x\n", boot_info.tbyb_and_update_info);
+    } else if (marker == OTA_REBOOT_MAGIC) {
+        snprintf(ota_boot_diag, sizeof(ota_boot_diag), "ROLLBACK TARGET 0x%08lx", (unsigned long)target);
+        watchdog_hw->scratch[0] = 0;
+        watchdog_hw->scratch[1] = 0;
     }
 }
 
@@ -492,6 +509,10 @@ const char *flightwall_ota_last_error(void) {
     return ota_last_error;
 }
 
+const char *flightwall_ota_boot_diagnostic(void) {
+    return ota_boot_diag;
+}
+
 void flightwall_ota_reboot_current(void) {
     printf("Rebooting current known-good image after OTA staging failure: %s\n", ota_last_error);
     cyw43_arch_disable_sta_mode();
@@ -516,6 +537,8 @@ bool flightwall_ota_transfer_active(void) {
 
 void flightwall_ota_reboot_to_update(void) {
     if (!flightwall_ota_update_ready()) return;
+    watchdog_hw->scratch[0] = OTA_REBOOT_MAGIC;
+    watchdog_hw->scratch[1] = ota_state->flash_update;
     cyw43_arch_disable_sta_mode();
     cyw43_arch_deinit();
     int ret = rom_reboot(REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE, 1000, ota_state->flash_update, 0);
