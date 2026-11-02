@@ -23,6 +23,8 @@ def main() -> int:
     parser.add_argument("--build", required=True, type=int)
     parser.add_argument("--uf2", required=True, type=Path)
     parser.add_argument("--private-key", required=True, type=Path)
+    parser.add_argument("--schema", type=int, choices=(2, 3), default=3,
+                        help="signed feed schema; use 2 only for the 1.6.41 -> 1.6.42 migration")
     parser.add_argument("--output-dir", type=Path, default=Path("update"))
     args = parser.parse_args()
 
@@ -56,11 +58,14 @@ def main() -> int:
 
     manifest = {
         "build": args.build,
-        "schema": 3,
+        "schema": args.schema,
         "sha256": digest,
         "size": len(payload),
         "version": args.version,
     }
+    if args.schema == 2:
+        blob_header = f"blob {len(payload)}\0".encode()
+        manifest["blob_sha"] = hashlib.sha1(blob_header + payload).hexdigest()
     manifest_bytes = (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode()
     manifest_path.write_bytes(manifest_bytes)
     run(["openssl", "dgst", "-sha256", "-sign", str(args.private_key),
@@ -87,9 +92,11 @@ def main() -> int:
         }, sort_keys=True, indent=2) + "\n"
     )
 
-    print(f"release {args.version} build {args.build}")
+    print(f"release {args.version} build {args.build} schema {args.schema}")
     print(f"payload {len(payload)} bytes")
     print(f"sha256 {digest}")
+    if args.schema == 2:
+        print(f"blob_sha {manifest['blob_sha']}")
     return 0
 
 
