@@ -61,6 +61,8 @@ typedef struct {
 
 typedef struct {
     char version[16];
+    char blob_sha[41];
+    uint32_t schema;
     uint32_t build;
     uint32_t size;
     uint8_t sha256[32];
@@ -388,16 +390,27 @@ static bool hex_digest(const char *hex, uint8_t output[32]) {
 
 static bool parse_manifest(const uint8_t *data, size_t length, update_manifest_t *manifest) {
     char sha_text[65];
-    uint32_t schema = 0;
     memset(manifest, 0, sizeof(*manifest));
     const char *json = (const char *)data;
-    if (!json_u32(json, length, "schema", &schema) || schema != 3 ||
+
+    if (!json_u32(json, length, "schema", &manifest->schema) ||
+        (manifest->schema != 2 && manifest->schema != 3) ||
         !json_u32(json, length, "build", &manifest->build) ||
         !json_u32(json, length, "size", &manifest->size) ||
         !json_string(json, length, "version", manifest->version, sizeof(manifest->version)) ||
         !json_string(json, length, "sha256", sha_text, sizeof(sha_text)) ||
         !hex_digest(sha_text, manifest->sha256)) {
         return false;
+    }
+
+    if (manifest->schema == 2) {
+        if (!json_string(json, length, "blob_sha",
+                         manifest->blob_sha, sizeof(manifest->blob_sha)) ||
+            strlen(manifest->blob_sha) != 40) {
+            return false;
+        }
+        for (size_t i = 0; i < 40; ++i)
+            if (!isxdigit((unsigned char)manifest->blob_sha[i])) return false;
     }
 
     return manifest->build > 0 && manifest->size >= 2048u &&
@@ -519,13 +532,25 @@ static bool process_feed_result(void) {
         return false;
     }
 
-    int manifest_length = snprintf((char *)manifest_bytes, sizeof(manifest_bytes),
-        "{\"build\":%lu,\"schema\":3,"
-        "\"sha256\":\"%s\",\"size\":%lu,\"version\":\"%s\"}\n",
-        (unsigned long)manifest.build,
-        sha_text,
-        (unsigned long)manifest.size,
-        manifest.version);
+    int manifest_length;
+    if (manifest.schema == 2) {
+        manifest_length = snprintf((char *)manifest_bytes, sizeof(manifest_bytes),
+            "{\"blob_sha\":\"%s\",\"build\":%lu,\"schema\":2,"
+            "\"sha256\":\"%s\",\"size\":%lu,\"version\":\"%s\"}\n",
+            manifest.blob_sha,
+            (unsigned long)manifest.build,
+            sha_text,
+            (unsigned long)manifest.size,
+            manifest.version);
+    } else {
+        manifest_length = snprintf((char *)manifest_bytes, sizeof(manifest_bytes),
+            "{\"build\":%lu,\"schema\":3,"
+            "\"sha256\":\"%s\",\"size\":%lu,\"version\":\"%s\"}\n",
+            (unsigned long)manifest.build,
+            sha_text,
+            (unsigned long)manifest.size,
+            manifest.version);
+    }
     if (manifest_length <= 0 || (size_t)manifest_length >= sizeof(manifest_bytes)) {
         snprintf(update_status, sizeof(update_status), "BAD MANIFEST REBUILD");
         finish_update_session();
