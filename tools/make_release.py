@@ -45,19 +45,18 @@ def main() -> int:
     payload = bytearray(full_image[512:])
     payload.extend(b"\x00" * ((-len(payload)) % 2048))
     digest = hashlib.sha256(payload).hexdigest()
-    blob_header = f"blob {len(payload)}\0".encode()
-    blob_sha = hashlib.sha1(blob_header + payload).hexdigest()
-
     args.output_dir.mkdir(parents=True, exist_ok=True)
     firmware_path = args.output_dir / "flightwall.uf2"
     manifest_path = args.output_dir / "manifest.json"
     signature_path = args.output_dir / "manifest.sig"
+    signature_hex_path = args.output_dir / "manifest.sig.hex"
+    check_path = args.output_dir / "check.json"
+    payload_info_path = args.output_dir / "payload-info.json"
     firmware_path.write_bytes(payload)
 
     manifest = {
-        "blob_sha": blob_sha,
         "build": args.build,
-        "schema": 2,
+        "schema": 3,
         "sha256": digest,
         "size": len(payload),
         "version": args.version,
@@ -74,10 +73,23 @@ def main() -> int:
         run(["openssl", "dgst", "-sha256", "-verify", str(public_key),
              "-signature", str(signature_path), str(manifest_path)])
 
+    signature_hex = signature_path.read_bytes().hex()
+    signature_hex_path.write_text(signature_hex + "\n")
+    check = dict(manifest)
+    check["signature_hex"] = signature_hex
+    check_path.write_text(json.dumps(check, sort_keys=True, separators=(",", ":")) + "\n")
+    payload_info_path.write_text(
+        json.dumps({
+            "build": args.build,
+            "sha256": digest,
+            "size": len(payload),
+            "version": args.version,
+        }, sort_keys=True, indent=2) + "\n"
+    )
+
     print(f"release {args.version} build {args.build}")
     print(f"payload {len(payload)} bytes")
     print(f"sha256 {digest}")
-    print(f"blob_sha {blob_sha}")
     return 0
 
 
