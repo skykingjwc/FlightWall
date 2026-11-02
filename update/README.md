@@ -1,33 +1,46 @@
 # Signed update feed
 
-FlightWall reads this directory through the public GitHub REST API at
-`api.github.com`. It does not require a GitHub token because the repository is
-public.
+FlightWall reads both update metadata and firmware directly from
+`raw.githubusercontent.com` over HTTPS. The repository is public, so no
+GitHub token is required on the device.
 
-- `manifest.json` describes the current release using schema 2.
-- `manifest.sig` is an ECDSA/secp256k1 signature over the exact manifest bytes.
-- `flightwall.uf2` is the inactive-slot OTA payload referenced by its Git blob SHA.
+- `check.json` is the small signed update advertisement FlightWall checks.
+- `manifest.json` is the canonical schema 3 document covered by the ECDSA signature.
+- `manifest.sig` and `manifest.sig.hex` contain the same ECDSA/secp256k1 signature.
+- `flightwall.uf2` is the raw inactive-slot OTA payload.
+- `payload-info.json` records the staged payload metadata for release tooling.
 
-The manifest is authenticated with the public key compiled into
-`update_public_key.h`. The private key must remain outside the repository.
+Schema 3 intentionally keeps the signed identity small:
 
-Schema 2 includes both:
+- `version`
+- `build`
+- `size`
+- `sha256`
 
-- `sha256`: verifies the decoded firmware payload before booting it.
-- `blob_sha`: identifies the exact Git blob fetched from
-  `/repos/skykingjwc/FlightWall/git/blobs/{blob_sha}`.
+The Git blob SHA is no longer part of the device protocol. FlightWall streams
+`update/flightwall.uf2` directly, verifies the exact byte count and SHA-256,
+then asks the RP2350 ROM to boot it using try-before-you-buy protection.
 
-Create all three release files from a signed full Stage 3 UF2:
+## Release order
+
+Publish the firmware payload first. Publish the matching signed `check.json`
+last. That way a device can never discover a new release before its firmware
+file exists. If the raw file and signed metadata ever disagree temporarily,
+the size/SHA-256 check rejects the payload and leaves the current image active.
+
+Create a signed release from a full Stage 3 UF2:
 
 ```sh
 python3 tools/make_release.py \
-  --version 1.6.21 \
-  --build 10621 \
+  --version 1.6.42 \
+  --build 10642 \
   --uf2 build/hub75_demo.uf2 \
   --private-key /secure/path/FlightWall-firmware-signing-private.pem
 ```
 
-The script removes the leading partition-table block expected only by USB
-installation, pads the application stream to the OTA receiver's 2 KiB boundary,
-computes both the SHA-256 digest and deterministic Git blob SHA, signs the
-manifest, and verifies the signature before returning success.
+The script removes the leading partition-table block used only for USB
+installation, pads the application stream to the OTA receiver's 2 KiB
+boundary, calculates SHA-256, signs the canonical manifest, verifies the
+signature, and writes all release metadata including `check.json`.
+
+The private signing key must remain outside the repository.
