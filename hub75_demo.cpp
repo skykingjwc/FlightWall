@@ -779,7 +779,9 @@ int main() {
     flightwall_update_set_download_callback(show_update_download);
 
     flightwall_aircraft_init();
-    show_wifi_status("FETCHING AIRCRAFT", "DATA FROM ADSB.FI", "PLEASE WAIT");
+    // ADS-B refresh is asynchronous now. Keep the last complete startup frame
+    // on the panels until the first normal aircraft page is ready instead of
+    // presenting a short-lived FETCHING AIRCRAFT frame.
     flightwall_aircraft_refresh();
 
     // Give the display/network stack time to settle before the first
