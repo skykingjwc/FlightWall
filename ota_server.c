@@ -6,12 +6,14 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
 #include "pico/sha256.h"
 #include "pico/bootrom.h"
 #include "pico/multicore.h"
+#include "hardware/watchdog.h"
 #include "boot/picobin.h"
 #include "boot/picoboot.h"
 #include "boot/uf2.h"
@@ -51,6 +53,15 @@ typedef struct TCP_UPDATE_SERVER_T_ {
 
 typedef struct uf2_block uf2_block_t;
 static TCP_UPDATE_SERVER_T *ota_state;
+static char ota_last_error[160] = "none";
+
+static void ota_record_error(const char *stage, int rc, uint32_t block_no, uintptr_t destination) {
+    snprintf(ota_last_error, sizeof(ota_last_error),
+             "%s rc=%d block=%lu addr=0x%08lx",
+             stage ? stage : "unknown", rc,
+             (unsigned long)block_no, (unsigned long)destination);
+    printf("OTA staging failure: %s\n", ota_last_error);
+}
 
 static TCP_UPDATE_SERVER_T* tcp_update_server_init(void) {
     TCP_UPDATE_SERVER_T *state = calloc(1, sizeof(TCP_UPDATE_SERVER_T));
@@ -189,7 +200,10 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
             // This ROM call returns a non-negative target partition index on
             // success, not necessarily BOOTROM_OK (zero). Boot ROM failures
             // use negative BOOTROM_ERROR_* values.
-            if (partition_rc < 0) return -1;
+            if (partition_rc < 0) {
+                ota_record_error("PARTITION LOOKUP", partition_rc, block->block_no, block->target_addr);
+                return -1;
+            }
 
             uint16_t first_sector =
                 (target_partition.permissions_and_location & PICOBIN_PARTITION_LOCATION_FIRST_SECTOR_BITS) >>
@@ -232,7 +246,11 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
             ret = rom_flash_op(flags, destination & ~(FLASH_SECTOR_ERASE_SIZE - 1u),
                                FLASH_SECTOR_ERASE_SIZE, NULL);
             multicore_lockout_end_blocking();
-            if (ret != BOOTROM_OK) return -1;
+            if (ret != BOOTROM_OK) {
+                ota_record_error("FLASH ERASE", ret, block->block_no,
+                                 destination & ~(FLASH_SECTOR_ERASE_SIZE - 1u));
+                return -1;
+            }
             state->highest_erased_sector = destination_sector;
         }
 
@@ -243,7 +261,10 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
         multicore_lockout_start_blocking();
         ret = rom_flash_op(flags, destination, block->payload_size, block->data);
         multicore_lockout_end_blocking();
-        if (ret != BOOTROM_OK) return -1;
+        if (ret != BOOTROM_OK) {
+            ota_record_error("FLASH PROGRAM", ret, block->block_no, destination);
+            return -1;
+        }
 
         state->blocks_done++;
         if (state->blocks_done == state->num_blocks) return 1;
@@ -465,6 +486,18 @@ bool flightwall_ota_http_finish(void) {
 void flightwall_ota_http_abort(void) {
     if (!ota_state) return;
     tcp_update_server_reset_transfer(ota_state);
+}
+
+const char *flightwall_ota_last_error(void) {
+    return ota_last_error;
+}
+
+void flightwall_ota_reboot_current(void) {
+    printf("Rebooting current known-good image after OTA staging failure: %s\n", ota_last_error);
+    cyw43_arch_disable_sta_mode();
+    cyw43_arch_deinit();
+    watchdog_reboot(0, 0, 100);
+    while (true) tight_loop_contents();
 }
 
 bool flightwall_ota_update_ready(void) {
