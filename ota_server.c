@@ -188,11 +188,15 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
             block->payload_size != 256 ||
             block->num_blocks == 0 ||
             block->block_no >= block->num_blocks) {
+            ota_record_error("UF2 INVALID", -1, block->block_no, block->target_addr);
             return -1;
         }
 
         if (state->num_blocks == 0) {
-            if (block->block_no != 0) return -1;
+            if (block->block_no != 0) {
+                ota_record_error("UF2 FIRST BLOCK", -1, block->block_no, block->target_addr);
+                return -1;
+            }
             state->num_blocks = block->num_blocks;
             state->family_id = block->file_size;
 
@@ -214,7 +218,10 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
             uint16_t last_sector =
                 (target_partition.permissions_and_location & PICOBIN_PARTITION_LOCATION_LAST_SECTOR_BITS) >>
                 PICOBIN_PARTITION_LOCATION_LAST_SECTOR_LSB;
-            if (last_sector < first_sector) return -1;
+            if (last_sector < first_sector) {
+                ota_record_error("PARTITION RANGE", -1, block->block_no, block->target_addr);
+                return -1;
+            }
 
             uint32_t code_start = first_sector * FLASH_SECTOR_ERASE_SIZE;
             uint32_t code_end = (last_sector + 1u) * FLASH_SECTOR_ERASE_SIZE;
@@ -226,6 +233,7 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
         if (state->blocks_done != (int)block->block_no ||
             state->family_id != block->file_size ||
             state->num_blocks != (int)block->num_blocks) {
+            ota_record_error("UF2 SEQUENCE", -1, block->block_no, block->target_addr);
             return -1;
         }
 
@@ -234,6 +242,7 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
         uintptr_t partition_end = partition_start + state->write_size;
         if (destination < partition_start ||
             destination + block->payload_size > partition_end) {
+            ota_record_error("DEST RANGE", -1, block->block_no, destination);
             return -1;
         }
 
