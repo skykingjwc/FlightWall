@@ -211,11 +211,18 @@ extern "C" void show_wifi_status(const char *line1, const char *line2, const cha
 
 extern "C" void show_update_download(const char *version) {
     clear();
-    centered_text(18, "DOWNLOADING UPDATE", AMBER);
+    centered_text(18, "RECEIVING UPDATE", AMBER);
     char line[32];
     std::snprintf(line, sizeof(line), "VERSION %s", version ? version : "");
     centered_text(31, line, CYAN);
     centered_text(44, "DO NOT POWER OFF", GREEN);
+    present();
+
+    // Flash erase/program pauses core 1, which drives the HUB75 refresh.
+    // Leave a stable blank frame on the panels before staging begins so those
+    // lockouts cannot expose a half-refreshed text frame.
+    sleep_ms(700);
+    clear();
     present();
 }
 
