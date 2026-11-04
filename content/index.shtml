@@ -188,6 +188,9 @@ checkUpdateButton.addEventListener('click', async () => {
   checkUpdateButton.disabled = true;
   autoUpdateStatus.textContent = 'CHECK REQUESTED';
 
+  // The Pico can briefly stop servicing the local web UI while its HTTPS
+  // update check is active. Treat a dropped browser request as transient;
+  // the updater's own status is authoritative.
   try {
     await fetch('/check_update.cgi?ts=' + Date.now(), {
       cache: 'no-store',
@@ -196,21 +199,26 @@ checkUpdateButton.addEventListener('click', async () => {
         'Pragma': 'no-cache'
       }
     });
+  } catch (error) {
+    // The CGI request may still have reached the Pico before the response
+    // connection dropped. Continue polling instead of declaring failure.
+  }
 
-    for (let attempt = 0; attempt < 60; ++attempt) {
-      await new Promise(resolve => setTimeout(resolve, 500));
+  for (let attempt = 0; attempt < 60; ++attempt) {
+    await new Promise(resolve => setTimeout(resolve, 750));
+    try {
       const value = await refreshUpdateStatus();
       if (value &&
           value !== 'CHECK REQUESTED' &&
           value !== 'CHECKING GITHUB API') {
         break;
       }
+    } catch (error) {
+      // Ignore transient local HTTP failures while the HTTPS client is busy.
     }
-  } catch (error) {
-    autoUpdateStatus.textContent = 'CHECK FAILED';
-  } finally {
-    checkUpdateButton.disabled = false;
   }
+
+  checkUpdateButton.disabled = false;
 });
 
 async function waitForFlightWallRestart() {
