@@ -124,6 +124,7 @@ target_link_libraries(hub75_demo PRIVATE
         pico_lwip_mbedtls
         pico_mbedtls
         pico_sha256
+        pico_flash
         boot_uf2_headers
         hardware_flash
 )
