@@ -57,6 +57,46 @@ static TCP_UPDATE_SERVER_T *ota_state;
 static char ota_last_error[160] = "none";
 static char ota_boot_diag[96] = "none";
 #define OTA_REBOOT_MAGIC 0x46574f54u
+#define OTA_FAILURE_MAGIC 0x46574641u
+
+enum {
+    OTA_FAILURE_NONE = 0,
+    OTA_FAILURE_UF2_INVALID = 1,
+    OTA_FAILURE_UF2_FIRST_BLOCK = 2,
+    OTA_FAILURE_PARTITION_LOOKUP = 3,
+    OTA_FAILURE_PARTITION_RANGE = 4,
+    OTA_FAILURE_UF2_SEQUENCE = 5,
+    OTA_FAILURE_DEST_RANGE = 6,
+    OTA_FAILURE_FLASH_ERASE = 7,
+    OTA_FAILURE_FLASH_PROGRAM = 8,
+    OTA_FAILURE_OTHER = 9
+};
+
+static uint32_t ota_failure_code(void) {
+    if (strncmp(ota_last_error, "UF2 INVALID", 11) == 0) return OTA_FAILURE_UF2_INVALID;
+    if (strncmp(ota_last_error, "UF2 FIRST BLOCK", 15) == 0) return OTA_FAILURE_UF2_FIRST_BLOCK;
+    if (strncmp(ota_last_error, "PARTITION LOOKUP", 16) == 0) return OTA_FAILURE_PARTITION_LOOKUP;
+    if (strncmp(ota_last_error, "PARTITION RANGE", 15) == 0) return OTA_FAILURE_PARTITION_RANGE;
+    if (strncmp(ota_last_error, "UF2 SEQUENCE", 12) == 0) return OTA_FAILURE_UF2_SEQUENCE;
+    if (strncmp(ota_last_error, "DEST RANGE", 10) == 0) return OTA_FAILURE_DEST_RANGE;
+    if (strncmp(ota_last_error, "FLASH ERASE", 11) == 0) return OTA_FAILURE_FLASH_ERASE;
+    if (strncmp(ota_last_error, "FLASH PROGRAM", 13) == 0) return OTA_FAILURE_FLASH_PROGRAM;
+    return OTA_FAILURE_OTHER;
+}
+
+static const char *ota_failure_text(uint32_t code) {
+    switch (code) {
+        case OTA_FAILURE_UF2_INVALID: return "LAST OTA FAIL: UF2 INVALID";
+        case OTA_FAILURE_UF2_FIRST_BLOCK: return "LAST OTA FAIL: UF2 FIRST BLOCK";
+        case OTA_FAILURE_PARTITION_LOOKUP: return "LAST OTA FAIL: PARTITION LOOKUP";
+        case OTA_FAILURE_PARTITION_RANGE: return "LAST OTA FAIL: PARTITION RANGE";
+        case OTA_FAILURE_UF2_SEQUENCE: return "LAST OTA FAIL: UF2 SEQUENCE";
+        case OTA_FAILURE_DEST_RANGE: return "LAST OTA FAIL: DEST RANGE";
+        case OTA_FAILURE_FLASH_ERASE: return "LAST OTA FAIL: FLASH ERASE";
+        case OTA_FAILURE_FLASH_PROGRAM: return "LAST OTA FAIL: FLASH PROGRAM";
+        default: return "LAST OTA FAIL: OTHER";
+    }
+}
 
 static void ota_record_error(const char *stage, int rc, uint32_t block_no, uintptr_t destination) {
     snprintf(ota_last_error, sizeof(ota_last_error),
@@ -398,6 +438,8 @@ static bool tcp_update_server_open(void *arg) {
 void flightwall_ota_confirm_running_image(void) {
     uint32_t marker = watchdog_hw->scratch[0];
     uint32_t target = watchdog_hw->scratch[1];
+    uint32_t failure_marker = watchdog_hw->scratch[2];
+    uint32_t failure_code = watchdog_hw->scratch[3];
 #ifdef __riscv
     // Increased bootrom stack is required for some of the functions in this example
     bootrom_stack_t stack = {
@@ -426,6 +468,10 @@ void flightwall_ota_confirm_running_image(void) {
         }
         ret = rom_get_boot_info(&boot_info);
         if (boot_info.tbyb_and_update_info) printf("Update info now %x\n", boot_info.tbyb_and_update_info);
+    } else if (failure_marker == OTA_FAILURE_MAGIC) {
+        snprintf(ota_boot_diag, sizeof(ota_boot_diag), "%s", ota_failure_text(failure_code));
+        watchdog_hw->scratch[2] = 0;
+        watchdog_hw->scratch[3] = 0;
     } else if (marker == OTA_REBOOT_MAGIC) {
         snprintf(ota_boot_diag, sizeof(ota_boot_diag), "ROLLBACK TARGET 0x%08lx", (unsigned long)target);
         watchdog_hw->scratch[0] = 0;
@@ -524,6 +570,8 @@ const char *flightwall_ota_boot_diagnostic(void) {
 
 void flightwall_ota_reboot_current(void) {
     printf("Rebooting current known-good image after OTA staging failure: %s\n", ota_last_error);
+    watchdog_hw->scratch[2] = OTA_FAILURE_MAGIC;
+    watchdog_hw->scratch[3] = ota_failure_code();
     cyw43_arch_disable_sta_mode();
     cyw43_arch_deinit();
     watchdog_reboot(0, 0, 100);
