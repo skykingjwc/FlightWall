@@ -294,10 +294,10 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
                 (CFLASH_OP_VALUE_ERASE << CFLASH_OP_LSB) |
                 (CFLASH_SECLEVEL_VALUE_SECURE << CFLASH_SECLEVEL_LSB) |
                 (CFLASH_ASPACE_VALUE_STORAGE << CFLASH_ASPACE_LSB);
-            multicore_lockout_start_blocking();
+            // Pico SDK 2.3.0's rom_flash_op() already uses flash_safe_execute()
+            // internally. Do not wrap it in a second multicore lockout.
             ret = rom_flash_op(flags, destination & ~(FLASH_SECTOR_ERASE_SIZE - 1u),
                                FLASH_SECTOR_ERASE_SIZE, NULL);
-            multicore_lockout_end_blocking();
             if (ret != BOOTROM_OK) {
                 ota_record_error("FLASH ERASE", ret, block->block_no,
                                  destination & ~(FLASH_SECTOR_ERASE_SIZE - 1u));
@@ -310,9 +310,8 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
             (CFLASH_OP_VALUE_PROGRAM << CFLASH_OP_LSB) |
             (CFLASH_SECLEVEL_VALUE_SECURE << CFLASH_SECLEVEL_LSB) |
             (CFLASH_ASPACE_VALUE_STORAGE << CFLASH_ASPACE_LSB);
-        multicore_lockout_start_blocking();
+        // rom_flash_op() performs its own flash-safe IRQ/core coordination.
         ret = rom_flash_op(flags, destination, block->payload_size, block->data);
-        multicore_lockout_end_blocking();
         if (ret != BOOTROM_OK) {
             ota_record_error("FLASH PROGRAM", ret, block->block_no, destination);
             return -1;
