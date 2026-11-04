@@ -67,6 +67,7 @@ jobs:
           (update / "flightwall.uf2").write_bytes(payload)
           (update / "payload-info.json").write_text(
               json.dumps({
+                  "blob_sha": blob_sha,
                   "build": build,
                   "sha256": sha256,
                   "size": len(payload),
@@ -78,6 +79,7 @@ jobs:
           print(f"build={build}")
           print(f"size={len(payload)}")
           print(f"sha256={sha256}")
+          print(f"blob_sha={blob_sha}")
 
       - name: Commit staged payload
         shell: bash
