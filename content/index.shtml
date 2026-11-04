@@ -144,9 +144,7 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
 
     <p><button id="checkUpdate" type="button">Check for update</button></p>
 
-    <form action="/install_update.cgi" method="get" onsubmit="return confirm('Install the newest signed FlightWall update if one is available?');">
-      <input type="submit" value="Install available update">
-    </form>
+    <p><button id="installAvailable" type="button">Install available update</button></p>
 
     <p><small>Checks run in the display loop, so the status above may take a few seconds to change. Refresh this page to see the result.</small></p>
 
@@ -162,6 +160,7 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
 </main>
 <script>
 const checkUpdateButton = document.getElementById('checkUpdate');
+const installAvailableButton = document.getElementById('installAvailable');
 const autoUpdateStatus = document.getElementById('autoUpdateStatus');
 const button = document.getElementById('install');
 const picker = document.getElementById('firmware');
@@ -218,6 +217,70 @@ checkUpdateButton.addEventListener('click', async () => {
     }
   }
 
+  checkUpdateButton.disabled = false;
+});
+
+async function waitForSignedUpdateRestart() {
+  let sawOffline = false;
+  let consecutiveOnline = 0;
+
+  for (let attempt = 0; attempt < 180; ++attempt) {
+    await new Promise(resolve => setTimeout(resolve, 750));
+
+    try {
+      const response = await fetch('/index.shtml?ota=' + Date.now(), {
+        cache: 'no-store',
+        headers: {
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache'
+        }
+      });
+      if (!response.ok) throw new Error('status request failed');
+
+      const page = await response.text();
+      const doc = new DOMParser().parseFromString(page, 'text/html');
+      const value = doc.getElementById('autoUpdateStatus');
+      const text = value ? value.textContent.trim() : '';
+
+      if (text) autoUpdateStatus.textContent = text;
+
+      if (sawOffline) {
+        consecutiveOnline++;
+        if (consecutiveOnline >= 2) {
+          window.location.replace('/index.shtml');
+          return;
+        }
+      }
+    } catch (error) {
+      sawOffline = true;
+      consecutiveOnline = 0;
+      autoUpdateStatus.textContent = 'RESTARTING - WAITING FOR FLIGHTWALL';
+    }
+  }
+
+  installAvailableButton.disabled = false;
+}
+
+installAvailableButton.addEventListener('click', async () => {
+  if (!confirm('Install the newest signed FlightWall update if one is available?')) return;
+
+  installAvailableButton.disabled = true;
+  checkUpdateButton.disabled = true;
+  autoUpdateStatus.textContent = 'INSTALL REQUESTED';
+
+  try {
+    await fetch('/install_update.cgi?ts=' + Date.now(), {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache'
+      }
+    });
+  } catch (error) {
+    // The request can be accepted even if the local HTTP response drops.
+  }
+
+  await waitForSignedUpdateRestart();
   checkUpdateButton.disabled = false;
 });
 
