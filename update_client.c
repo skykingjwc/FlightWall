@@ -856,7 +856,24 @@ static bool process_firmware_result(void) {
 
         if (strcmp(reason, "OTA WRITE") == 0 &&
             flash_detail && strcmp(flash_detail, "none") != 0) {
-            snprintf(update_status, sizeof(update_status), "FLASH FAILED - REBOOTING");
+            if (strncmp(flash_detail, "UF2 INVALID", 11) == 0)
+                snprintf(update_status, sizeof(update_status), "UF2 INVALID - REBOOTING");
+            else if (strncmp(flash_detail, "UF2 FIRST BLOCK", 15) == 0)
+                snprintf(update_status, sizeof(update_status), "UF2 FIRST BLOCK - REBOOTING");
+            else if (strncmp(flash_detail, "PARTITION LOOKUP", 16) == 0)
+                snprintf(update_status, sizeof(update_status), "PARTITION LOOKUP - REBOOTING");
+            else if (strncmp(flash_detail, "PARTITION RANGE", 15) == 0)
+                snprintf(update_status, sizeof(update_status), "PARTITION RANGE - REBOOTING");
+            else if (strncmp(flash_detail, "UF2 SEQUENCE", 12) == 0)
+                snprintf(update_status, sizeof(update_status), "UF2 SEQUENCE - REBOOTING");
+            else if (strncmp(flash_detail, "DEST RANGE", 10) == 0)
+                snprintf(update_status, sizeof(update_status), "DEST RANGE - REBOOTING");
+            else if (strncmp(flash_detail, "FLASH ERASE", 11) == 0)
+                snprintf(update_status, sizeof(update_status), "FLASH ERASE - REBOOTING");
+            else if (strncmp(flash_detail, "FLASH PROGRAM", 13) == 0)
+                snprintf(update_status, sizeof(update_status), "FLASH PROGRAM - REBOOTING");
+            else
+                snprintf(update_status, sizeof(update_status), "FLASH FAILED - REBOOTING");
         } else {
             snprintf(update_status, sizeof(update_status), "%s - REBOOTING", reason);
         }
