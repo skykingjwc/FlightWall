@@ -388,15 +388,13 @@ static err_t receive_body(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_
         }
     }
 
-    if (request.kind == REQUEST_FIRMWARE && !request.failed) {
-        // Withhold TCP receive-window credit until the main loop has drained
-        // queued firmware bytes to flash. This applies natural backpressure to
-        // GitHub instead of allowing the callback to outrun available RAM.
+    // Return TCP receive-window credit immediately. The decoded firmware
+    // queue provides the buffering boundary; holding TCP credit here made the
+    // GitHub TLS stream unnecessarily fragile and could stall mid-transfer.
+    // If the RAM queue truly fills, firmware_queue_decoded() fails explicitly.
+    if (request.kind == REQUEST_FIRMWARE && !request.failed)
         request.firmware_pcb = pcb;
-        request.tcp_credit_pending += received_now;
-    } else {
-        altcp_recved(pcb, received_now);
-    }
+    altcp_recved(pcb, received_now);
 
     pbuf_free(p);
     return request.failed ? ERR_BUF : ERR_OK;
@@ -939,26 +937,6 @@ static bool drain_firmware_queue(void) {
             snprintf(update_status, sizeof(update_status), "DOWNLOADING %s %lu%%",
                      pending_manifest.version, percent);
         }
-    }
-
-    // Return receive-window credit only after queued data has been consumed.
-    // Take the CYW43/lwIP lock because this runs from the display/main loop.
-    if (firmware_queue_used() <= (FIRMWARE_QUEUE_CAPACITY * 3u) / 4u &&
-        request.tcp_credit_pending != 0) {
-        cyw43_arch_lwip_begin();
-        if (request.firmware_pcb && !request.done) {
-            // altcp_recved()/tcp_recved() accept a 16-bit length. Keep the
-            // accounting in 32 bits, but return it to lwIP in bounded chunks
-            // so credit can never truncate at 64 KiB and stall the sender.
-            while (request.tcp_credit_pending != 0) {
-                uint16_t credit = request.tcp_credit_pending > 0xffffu
-                    ? 0xffffu
-                    : (uint16_t)request.tcp_credit_pending;
-                altcp_recved(request.firmware_pcb, credit);
-                request.tcp_credit_pending -= credit;
-            }
-        }
-        cyw43_arch_lwip_end();
     }
 
     return true;
