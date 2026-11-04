@@ -63,6 +63,11 @@ typedef struct {
     uint8_t blob_key_match;
     char b64_quartet[4];
     uint8_t b64_count;
+    bool firmware_chunked;
+    uint32_t chunk_remaining;
+    uint32_t chunk_size;
+    uint8_t chunk_state;
+    bool chunk_extension;
     char failure_reason[32];
 } update_request_t;
 
@@ -252,6 +257,107 @@ static bool firmware_blob_feed(const uint8_t *data, size_t length) {
     return true;
 }
 
+
+enum {
+    FW_CHUNK_SIZE = 0,
+    FW_CHUNK_SIZE_LF,
+    FW_CHUNK_DATA,
+    FW_CHUNK_DATA_CR,
+    FW_CHUNK_DATA_LF,
+    FW_CHUNK_TRAILER
+};
+
+static int chunk_hex_value(unsigned char ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+}
+
+// lwIP's httpc body callback includes HTTP chunk framing when Content-Length
+// is unknown. Strip that framing before feeding GitHub's JSON/base64 body to
+// the firmware decoder. Without this, hexadecimal chunk-size text is valid
+// base64 and silently corrupts the UF2 stream.
+static bool firmware_http_feed(const uint8_t *data, size_t length) {
+    if (!request.firmware_chunked) return firmware_blob_feed(data, length);
+
+    size_t i = 0;
+    while (i < length) {
+        unsigned char ch = data[i];
+
+        switch (request.chunk_state) {
+            case FW_CHUNK_SIZE: {
+                if (ch == '\r') {
+                    request.chunk_state = FW_CHUNK_SIZE_LF;
+                    i++;
+                    break;
+                }
+                if (request.chunk_extension) {
+                    i++;
+                    break;
+                }
+                if (ch == ';') {
+                    request.chunk_extension = true;
+                    i++;
+                    break;
+                }
+                int value = chunk_hex_value(ch);
+                if (value < 0 || request.chunk_size > 0x0fffffffu) return false;
+                request.chunk_size = (request.chunk_size << 4) | (uint32_t)value;
+                i++;
+                break;
+            }
+
+            case FW_CHUNK_SIZE_LF:
+                if (ch != '\n') return false;
+                i++;
+                if (request.chunk_size == 0) {
+                    request.chunk_state = FW_CHUNK_TRAILER;
+                } else {
+                    request.chunk_remaining = request.chunk_size;
+                    request.chunk_state = FW_CHUNK_DATA;
+                }
+                break;
+
+            case FW_CHUNK_DATA: {
+                size_t available = length - i;
+                size_t take = request.chunk_remaining < available
+                    ? request.chunk_remaining : available;
+                if (take && !firmware_blob_feed(data + i, take)) return false;
+                i += take;
+                request.chunk_remaining -= (uint32_t)take;
+                if (request.chunk_remaining == 0)
+                    request.chunk_state = FW_CHUNK_DATA_CR;
+                break;
+            }
+
+            case FW_CHUNK_DATA_CR:
+                if (ch != '\r') return false;
+                request.chunk_state = FW_CHUNK_DATA_LF;
+                i++;
+                break;
+
+            case FW_CHUNK_DATA_LF:
+                if (ch != '\n') return false;
+                request.chunk_state = FW_CHUNK_SIZE;
+                request.chunk_size = 0;
+                request.chunk_extension = false;
+                i++;
+                break;
+
+            case FW_CHUNK_TRAILER:
+                // The zero-sized chunk comes after the JSON body. Nothing in
+                // the HTTP trailers belongs to the firmware payload.
+                i = length;
+                break;
+
+            default:
+                return false;
+        }
+    }
+    return true;
+}
+
 static err_t receive_body(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_t err) {
     (void)arg;
     if (!p) return ERR_OK;
@@ -273,8 +379,8 @@ static err_t receive_body(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_
                 }
                 memcpy(request.buffer + request.received, part->payload, part->len);
             } else if (request.kind == REQUEST_FIRMWARE) {
-                if (!firmware_blob_feed((const uint8_t *)part->payload, part->len)) {
-                    request_fail("BLOB DECODE");
+                if (!firmware_http_feed((const uint8_t *)part->payload, part->len)) {
+                    request_fail("HTTP/BLOB DECODE");
                     break;
                 }
             }
@@ -321,7 +427,14 @@ static err_t headers_received(httpc_state_t *connection, void *arg, struct pbuf 
         }
     } else if (request.kind == REQUEST_FIRMWARE) {
         // GitHub's blob API returns JSON/base64, so HTTP Content-Length is the
-        // encoded envelope size rather than the decoded UF2 size.
+        // encoded envelope size rather than the decoded UF2 size. When there
+        // is no Content-Length, lwIP supplies the HTTP chunk framing to the
+        // body callback, so strip it incrementally before JSON/base64 decode.
+        request.firmware_chunked = !request.content_length_known;
+        request.chunk_state = FW_CHUNK_SIZE;
+        request.chunk_remaining = 0;
+        request.chunk_size = 0;
+        request.chunk_extension = false;
     }
     return ERR_OK;
 }
