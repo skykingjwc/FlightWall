@@ -107,6 +107,8 @@ static update_state_t update_state = UPDATE_STATE_IDLE;
 static bool pending_force_install;
 static uint64_t recovery_reboot_at_us;
 static update_manifest_t pending_manifest;
+static update_manifest_t verified_manifest;
+static bool verified_manifest_available;
 
 static uint32_t now_ms(void) {
     return to_ms_since_boot(get_absolute_time());
@@ -590,6 +592,7 @@ static bool start_feed_check(bool force_install) {
     last_check_ms = now_ms();
     last_check_succeeded = false;
     pending_force_install = force_install;
+    verified_manifest_available = false;
     flightwall_update_init();
 
     if (!update_tls_begin()) {
@@ -757,6 +760,7 @@ static bool process_feed_result(void) {
 
     last_check_succeeded = true;
     if (manifest.build <= FLIGHTWALL_BUILD_NUMBER) {
+        verified_manifest_available = false;
         snprintf(update_status, sizeof(update_status), "CURRENT %s", FLIGHTWALL_VERSION);
         finish_update_session();
         return false;
@@ -764,6 +768,12 @@ static bool process_feed_result(void) {
 
     printf("FlightWall update %s (build %lu, %lu bytes) available\n",
            manifest.version, (unsigned long)manifest.build, (unsigned long)manifest.size);
+
+    // Keep the already-verified manifest in RAM. A manual Install click can
+    // then go straight to the firmware blob instead of repeating the feed
+    // request and signature check over a second TLS connection.
+    verified_manifest = manifest;
+    verified_manifest_available = true;
 
     if (!pending_force_install && !flightwall_settings_get()->auto_install_updates) {
         snprintf(update_status, sizeof(update_status), "AVAILABLE %s", manifest.version);
@@ -997,6 +1007,26 @@ bool flightwall_update_process_requests(void) {
     if (install_requested) {
         install_requested = false;
         check_requested = false;
+
+        if (verified_manifest_available &&
+            verified_manifest.build > FLIGHTWALL_BUILD_NUMBER) {
+            if (!update_tls_begin()) {
+                snprintf(update_status, sizeof(update_status), "TLS INIT FAILED");
+                return false;
+            }
+
+            update_manifest_t manifest = verified_manifest;
+            verified_manifest_available = false;
+            if (!start_firmware_download(&manifest)) {
+                last_check_succeeded = false;
+                snprintf(update_status, sizeof(update_status), "UPDATE DOWNLOAD START FAILED");
+                update_tls_end();
+            }
+            return false;
+        }
+
+        // Direct install without a prior successful check still performs a
+        // fresh signed feed lookup.
         (void)start_feed_check(true);
         return false;
     }
