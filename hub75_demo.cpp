@@ -8,6 +8,7 @@
 #include "hardware/clocks.h"
 #include "pico/cyw43_arch.h"
 #include "pico/multicore.h"
+#include "pico/flash.h"
 #include "pico/stdlib.h"
 
 #include "font8_data.hpp"
@@ -734,7 +735,10 @@ void show_load_test() {
 }
 
 void core1_entry() {
-    multicore_lockout_victim_init();
+    // Required by pico_flash/flash_safe_execute when using pico_multicore.
+    // rom_flash_op() in Pico SDK 2.3.0 uses this mechanism internally.
+    if (!flash_safe_execute_core_init())
+        printf("flash-safe core1 init failed\n");
     driver.create();
     driver.start();
     while (true) tight_loop_contents();
