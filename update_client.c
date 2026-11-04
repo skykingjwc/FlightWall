@@ -943,13 +943,20 @@ static bool drain_firmware_queue(void) {
 
     // Return receive-window credit only after queued data has been consumed.
     // Take the CYW43/lwIP lock because this runs from the display/main loop.
-    if (firmware_queue_used() <= FIRMWARE_QUEUE_CAPACITY / 2u &&
+    if (firmware_queue_used() <= (FIRMWARE_QUEUE_CAPACITY * 3u) / 4u &&
         request.tcp_credit_pending != 0) {
         cyw43_arch_lwip_begin();
         if (request.firmware_pcb && !request.done) {
-            uint32_t credit = request.tcp_credit_pending;
-            request.tcp_credit_pending = 0;
-            altcp_recved(request.firmware_pcb, credit);
+            // altcp_recved()/tcp_recved() accept a 16-bit length. Keep the
+            // accounting in 32 bits, but return it to lwIP in bounded chunks
+            // so credit can never truncate at 64 KiB and stall the sender.
+            while (request.tcp_credit_pending != 0) {
+                uint16_t credit = request.tcp_credit_pending > 0xffffu
+                    ? 0xffffu
+                    : (uint16_t)request.tcp_credit_pending;
+                altcp_recved(request.firmware_pcb, credit);
+                request.tcp_credit_pending -= credit;
+            }
         }
         cyw43_arch_lwip_end();
     }
