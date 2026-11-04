@@ -861,7 +861,14 @@ static bool process_firmware_result(void) {
     request.firmware_pcb = NULL;
     request.tcp_credit_pending = 0;
 
-    bool transfer_ok = request_ok() &&
+    // For a completed firmware body, HTTP status + exact byte counts are
+    // authoritative. GitHub may close the TCP connection immediately after
+    // sending the full response, which lwIP can surface as HTTPC_RESULT_ERR_CLOSED
+    // even though the entire signed payload arrived successfully.
+    //
+    // An early/truncated close is still rejected because blob completion,
+    // decoded byte count, flashed byte count and SHA-256 must all match.
+    bool transfer_ok = request.http_status == 200 &&
                        request.blob_content_found &&
                        request.blob_content_done &&
                        request.decoded_received == request.expected &&
@@ -877,10 +884,37 @@ static bool process_firmware_result(void) {
         request.sha_active = false;
     }
 
-    if (!transfer_ok || !hash_ok || !flightwall_ota_http_finish()) {
+    if (!transfer_ok) {
+        printf("OTA transfer incomplete: http=%lu result=%d content=%d/%d decoded=%lu/%lu flashed=%lu/%lu\n",
+               (unsigned long)request.http_status, (int)request.result,
+               request.blob_content_found ? 1 : 0,
+               request.blob_content_done ? 1 : 0,
+               (unsigned long)request.decoded_received,
+               (unsigned long)request.expected,
+               (unsigned long)request.flashed_received,
+               (unsigned long)request.expected);
         flightwall_ota_http_abort();
         last_check_succeeded = false;
-        snprintf(update_status, sizeof(update_status), "UPDATE DOWNLOAD FAILED");
+        snprintf(update_status, sizeof(update_status), "TRANSFER INCOMPLETE");
+        finish_update_session();
+        return false;
+    }
+
+    if (!hash_ok) {
+        printf("OTA SHA-256 mismatch after %lu bytes\n",
+               (unsigned long)request.flashed_received);
+        flightwall_ota_http_abort();
+        last_check_succeeded = false;
+        snprintf(update_status, sizeof(update_status), "SHA256 MISMATCH");
+        finish_update_session();
+        return false;
+    }
+
+    if (!flightwall_ota_http_finish()) {
+        printf("OTA finalization failed: %s\n", flightwall_ota_last_error());
+        flightwall_ota_http_abort();
+        last_check_succeeded = false;
+        snprintf(update_status, sizeof(update_status), "OTA FINALIZE FAILED");
         finish_update_session();
         return false;
     }
