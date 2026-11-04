@@ -62,6 +62,10 @@ jobs:
           payload.extend(b"\x00" * ((-len(payload)) % 2048))
 
           sha256 = hashlib.sha256(payload).hexdigest()
+          blob_sha = hashlib.sha1(
+              f"blob {len(payload)}\0".encode() + payload
+          ).hexdigest()
+
           update = Path("update")
           update.mkdir(exist_ok=True)
           (update / "flightwall.uf2").write_bytes(payload)
