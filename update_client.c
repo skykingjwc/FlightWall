@@ -116,6 +116,8 @@ static uint32_t current_chunk_index;
 static bool next_chunk_pending;
 static uint8_t next_chunk_attempts;
 static uint64_t next_chunk_start_at_us;
+static size_t current_chunk_decoded_start;
+static uint8_t current_chunk_http_retries;
 
 static uint32_t now_ms(void) {
     return to_ms_since_boot(get_absolute_time());
@@ -766,6 +768,7 @@ static bool start_chunk_download(void) {
     printf("OTA chunk %lu/%lu starting\n",
            (unsigned long)(current_chunk_index + 1u),
            (unsigned long)pending_manifest.chunk_count);
+    current_chunk_decoded_start = request.decoded_received;
     return start_get(UPDATE_API_HOST, blob_path);
 }
 
@@ -783,6 +786,8 @@ static bool start_firmware_download(const update_manifest_t *manifest) {
     next_chunk_pending = false;
     next_chunk_attempts = 0;
     next_chunk_start_at_us = 0;
+    current_chunk_decoded_start = 0;
+    current_chunk_http_retries = 0;
 
     if (!request.sha_active || !start_chunk_download()) {
         if (request.sha_active) {
@@ -987,6 +992,28 @@ static bool process_firmware_result(void) {
                request.blob_content_done ? 1 : 0,
                (unsigned long)request.decoded_received,
                (unsigned long)request.expected);
+
+        // GitHub occasionally accepts a new TLS request and then closes it
+        // before sending an HTTP response. Retry only when this chunk received
+        // zero decoded firmware bytes, so a partial chunk can never be replayed.
+        const bool transient_empty_close =
+            request.http_status == 0 &&
+            request.result == HTTPC_RESULT_ERR_CLOSED &&
+            request.decoded_received == current_chunk_decoded_start &&
+            request.queue_tail == request.queue_head;
+
+        if (transient_empty_close && current_chunk_http_retries < 5u) {
+            current_chunk_http_retries++;
+            printf("OTA chunk %lu/%lu HTTP retry %u/5 after empty close\n",
+                   (unsigned long)(current_chunk_index + 1u),
+                   (unsigned long)pending_manifest.chunk_count,
+                   (unsigned)current_chunk_http_retries);
+            next_chunk_pending = true;
+            next_chunk_attempts = 0;
+            next_chunk_start_at_us = time_us_64() + 1000000u;
+            return false;
+        }
+
         flightwall_ota_http_abort();
         last_check_succeeded = false;
         snprintf(update_status, sizeof(update_status), "CHUNK %lu FAILED",
@@ -1003,9 +1030,10 @@ static bool process_firmware_result(void) {
 
     if (current_chunk_index + 1u < pending_manifest.chunk_count) {
         current_chunk_index++;
+        current_chunk_http_retries = 0;
         next_chunk_pending = true;
         next_chunk_attempts = 0;
-        next_chunk_start_at_us = time_us_64() + 250000u;
+        next_chunk_start_at_us = time_us_64() + 1000000u;
         return false;
     }
 
