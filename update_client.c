@@ -113,6 +113,9 @@ static update_manifest_t pending_manifest;
 static update_manifest_t verified_manifest;
 static bool verified_manifest_available;
 static uint32_t current_chunk_index;
+static bool next_chunk_pending;
+static uint8_t next_chunk_attempts;
+static uint64_t next_chunk_start_at_us;
 
 static uint32_t now_ms(void) {
     return to_ms_since_boot(get_absolute_time());
@@ -777,6 +780,9 @@ static bool start_firmware_download(const update_manifest_t *manifest) {
     mbedtls_sha256_init(&request.sha);
     request.sha_active = mbedtls_sha256_starts(&request.sha, 0) == 0;
     current_chunk_index = 0;
+    next_chunk_pending = false;
+    next_chunk_attempts = 0;
+    next_chunk_start_at_us = 0;
 
     if (!request.sha_active || !start_chunk_download()) {
         if (request.sha_active) {
@@ -920,6 +926,31 @@ static bool drain_firmware_queue(void) {
 }
 
 static bool process_firmware_result(void) {
+    if (next_chunk_pending) {
+        if (time_us_64() < next_chunk_start_at_us) return false;
+
+        if (start_chunk_download()) {
+            next_chunk_pending = false;
+            next_chunk_attempts = 0;
+            return false;
+        }
+
+        next_chunk_attempts++;
+        printf("OTA chunk %lu/%lu start retry %u/5\n",
+               (unsigned long)(current_chunk_index + 1u),
+               (unsigned long)pending_manifest.chunk_count,
+               (unsigned)next_chunk_attempts);
+        if (next_chunk_attempts >= 5u) {
+            flightwall_ota_http_abort();
+            last_check_succeeded = false;
+            snprintf(update_status, sizeof(update_status), "NEXT CHUNK FAILED");
+            finish_update_session();
+            return false;
+        }
+        next_chunk_start_at_us = time_us_64() + 250000u;
+        return false;
+    }
+
     // A complete 32 KiB firmware chunk fits in RAM. Wait until GitHub has
     // closed out the HTTP request before erasing/programming any flash.
     if (!request.done) return false;
@@ -972,12 +1003,9 @@ static bool process_firmware_result(void) {
 
     if (current_chunk_index + 1u < pending_manifest.chunk_count) {
         current_chunk_index++;
-        if (!start_chunk_download()) {
-            flightwall_ota_http_abort();
-            last_check_succeeded = false;
-            snprintf(update_status, sizeof(update_status), "NEXT CHUNK FAILED");
-            finish_update_session();
-        }
+        next_chunk_pending = true;
+        next_chunk_attempts = 0;
+        next_chunk_start_at_us = time_us_64() + 250000u;
         return false;
     }
 

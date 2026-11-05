@@ -235,7 +235,8 @@ void ota_checkpoint() {
         driver.setIntensity(settings->brightness_percent / 100.0f);
         applied_settings_generation = generation;
     }
-    (void)flightwall_aircraft_process();
+    if (flightwall_aircraft_refresh_active())
+        (void)flightwall_aircraft_process();
 
     // Never start/process a GitHub HTTPS request while the ADS-B HTTPS client
     // still owns a live request. Queued update requests simply wait for the
@@ -259,6 +260,9 @@ void normal_screen_delay() {
     for (uint32_t elapsed = 0; elapsed < duration_ms; elapsed += 100u) {
         if (flightwall_emergency_test_active() || flightwall_load_test_active()) break;
         (void)flightwall_aircraft_process();
+        if (!flightwall_aircraft_refresh_active())
+            (void)flightwall_update_process_requests();
+        if (flightwall_update_installing()) break;
         sleep_ms(std::min<uint32_t>(100, duration_ms - elapsed));
     }
 }
@@ -802,6 +806,12 @@ int main() {
     bool first_update_check_queued = false;
 
     while (true) {
+        if (flightwall_update_installing()) {
+            ota_checkpoint();
+            sleep_ms(100);
+            continue;
+        }
+
         (void)flightwall_aircraft_process();
 
         if (!first_update_check_queued &&
@@ -811,12 +821,6 @@ int main() {
             flightwall_update_request_check();
             first_update_check_queued = true;
         }
-        if (flightwall_update_installing()) {
-            ota_checkpoint();
-            sleep_ms(100);
-            continue;
-        }
-
         const flightwall_settings_t *current_settings = flightwall_settings_get();
         if (!flightwall_update_network_busy() &&
             flightwall_aircraft_refresh_due(current_settings->refresh_seconds))
