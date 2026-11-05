@@ -58,6 +58,16 @@ static char ota_last_error[160] = "none";
 static char ota_boot_diag[96] = "none";
 #define OTA_REBOOT_MAGIC 0x46574f54u
 #define OTA_FAILURE_MAGIC 0x46574641u
+#define OTA_STAGE_MAGIC 0x46575354u
+#define OTA_STAGE_WATCHDOG_MS 30000u
+
+enum {
+    OTA_STAGE_NONE = 0,
+    OTA_STAGE_DOWNLOAD = 1,
+    OTA_STAGE_PARTITION = 2,
+    OTA_STAGE_ERASE = 3,
+    OTA_STAGE_PROGRAM = 4
+};
 
 enum {
     OTA_FAILURE_NONE = 0,
@@ -71,6 +81,30 @@ enum {
     OTA_FAILURE_FLASH_PROGRAM = 8,
     OTA_FAILURE_OTHER = 9
 };
+
+static void ota_stage_set(uint32_t stage, uint32_t block_no, uintptr_t address) {
+    watchdog_hw->scratch[4] = OTA_STAGE_MAGIC;
+    watchdog_hw->scratch[5] = stage;
+    watchdog_hw->scratch[6] = block_no;
+    watchdog_hw->scratch[7] = (uint32_t)address;
+}
+
+static void ota_stage_clear(void) {
+    watchdog_hw->scratch[4] = 0;
+    watchdog_hw->scratch[5] = 0;
+    watchdog_hw->scratch[6] = 0;
+    watchdog_hw->scratch[7] = 0;
+}
+
+static const char *ota_stage_text(uint32_t stage) {
+    switch (stage) {
+        case OTA_STAGE_DOWNLOAD: return "DOWNLOAD";
+        case OTA_STAGE_PARTITION: return "PARTITION";
+        case OTA_STAGE_ERASE: return "ERASE";
+        case OTA_STAGE_PROGRAM: return "PROGRAM";
+        default: return "UNKNOWN";
+    }
+}
 
 static uint32_t ota_failure_code(void) {
     if (strncmp(ota_last_error, "UF2 INVALID", 11) == 0) return OTA_FAILURE_UF2_INVALID;
@@ -241,6 +275,8 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
             state->family_id = block->file_size;
 
             resident_partition_t target_partition = {0};
+            ota_stage_set(OTA_STAGE_PARTITION, block->block_no, block->target_addr);
+            watchdog_update();
             rom_flash_flush_cache();
             int partition_rc = rom_get_uf2_target_partition(
                 workarea, sizeof(workarea), state->family_id, &target_partition);
@@ -296,6 +332,9 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
                 (CFLASH_ASPACE_VALUE_STORAGE << CFLASH_ASPACE_LSB);
             // Pico SDK 2.3.0's rom_flash_op() already uses flash_safe_execute()
             // internally. Do not wrap it in a second multicore lockout.
+            ota_stage_set(OTA_STAGE_ERASE, block->block_no,
+                          destination & ~(FLASH_SECTOR_ERASE_SIZE - 1u));
+            watchdog_update();
             ret = rom_flash_op(flags, destination & ~(FLASH_SECTOR_ERASE_SIZE - 1u),
                                FLASH_SECTOR_ERASE_SIZE, NULL);
             if (ret != BOOTROM_OK) {
@@ -311,6 +350,8 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
             (CFLASH_SECLEVEL_VALUE_SECURE << CFLASH_SECLEVEL_LSB) |
             (CFLASH_ASPACE_VALUE_STORAGE << CFLASH_ASPACE_LSB);
         // rom_flash_op() performs its own flash-safe IRQ/core coordination.
+        ota_stage_set(OTA_STAGE_PROGRAM, block->block_no, destination);
+        watchdog_update();
         ret = rom_flash_op(flags, destination, block->payload_size, block->data);
         if (ret != BOOTROM_OK) {
             ota_record_error("FLASH PROGRAM", ret, block->block_no, destination);
@@ -439,6 +480,10 @@ void flightwall_ota_confirm_running_image(void) {
     uint32_t target = watchdog_hw->scratch[1];
     uint32_t failure_marker = watchdog_hw->scratch[2];
     uint32_t failure_code = watchdog_hw->scratch[3];
+    uint32_t stage_marker = watchdog_hw->scratch[4];
+    uint32_t stage = watchdog_hw->scratch[5];
+    uint32_t stage_block = watchdog_hw->scratch[6];
+    uint32_t stage_address = watchdog_hw->scratch[7];
 #ifdef __riscv
     // Increased bootrom stack is required for some of the functions in this example
     bootrom_stack_t stack = {
@@ -464,6 +509,7 @@ void flightwall_ota_confirm_running_image(void) {
             snprintf(ota_boot_diag, sizeof(ota_boot_diag), "UPDATE BOOT COMMITTED");
             watchdog_hw->scratch[0] = 0;
             watchdog_hw->scratch[1] = 0;
+            ota_stage_clear();
         }
         ret = rom_get_boot_info(&boot_info);
         if (boot_info.tbyb_and_update_info) printf("Update info now %x\n", boot_info.tbyb_and_update_info);
@@ -471,10 +517,19 @@ void flightwall_ota_confirm_running_image(void) {
         snprintf(ota_boot_diag, sizeof(ota_boot_diag), "%s", ota_failure_text(failure_code));
         watchdog_hw->scratch[2] = 0;
         watchdog_hw->scratch[3] = 0;
+        ota_stage_clear();
     } else if (marker == OTA_REBOOT_MAGIC) {
         snprintf(ota_boot_diag, sizeof(ota_boot_diag), "ROLLBACK TARGET 0x%08lx", (unsigned long)target);
         watchdog_hw->scratch[0] = 0;
         watchdog_hw->scratch[1] = 0;
+        ota_stage_clear();
+    } else if (stage_marker == OTA_STAGE_MAGIC) {
+        snprintf(ota_boot_diag, sizeof(ota_boot_diag),
+                 "OTA WATCHDOG: %s B%lu 0x%08lx",
+                 ota_stage_text(stage),
+                 (unsigned long)stage_block,
+                 (unsigned long)stage_address);
+        ota_stage_clear();
     }
 }
 
@@ -502,10 +557,19 @@ bool flightwall_ota_http_begin(size_t content_length) {
     tcp_update_server_reset_transfer(ota_state);
     ota_state->http_active = true;
     ota_state->http_expected = content_length;
+
+    // GitHub OTA is the only path that uses this HTTP staging entry point.
+    // Arm a watchdog before the first ROM partition/flash call so a deadlock
+    // automatically returns to the known-good image. Scratch registers retain
+    // the last staging checkpoint across the watchdog reset for diagnosis.
+    ota_stage_set(OTA_STAGE_DOWNLOAD, 0, 0);
+    watchdog_enable(OTA_STAGE_WATCHDOG_MS, true);
+    watchdog_update();
     return true;
 }
 
 bool flightwall_ota_http_write(const uint8_t *data, size_t length) {
+    watchdog_update();
     if (!ota_state || !ota_state->http_active || !data ||
         ota_state->http_received + length > ota_state->http_expected) {
         return false;
