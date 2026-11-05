@@ -696,33 +696,6 @@ static bool start_feed_check(bool force_install) {
     return true;
 }
 
-static bool decode_manifest_b64(const char *manifest_b64, size_t *manifest_length) {
-    *manifest_length = 0;
-    char quartet[4];
-    uint8_t quartet_count = 0;
-
-    for (size_t i = 0; manifest_b64[i]; ++i) {
-        unsigned char ch = (unsigned char)manifest_b64[i];
-        if (isspace(ch)) continue;
-        if (base64_value(ch) == -1) return false;
-
-        quartet[quartet_count++] = (char)ch;
-        if (quartet_count == 4) {
-            uint8_t decoded[3];
-            size_t decoded_length = 0;
-            if (!decode_base64_quartet(quartet, decoded, &decoded_length) ||
-                *manifest_length + decoded_length > sizeof(manifest_bytes)) {
-                return false;
-            }
-            memcpy(manifest_bytes + *manifest_length, decoded, decoded_length);
-            *manifest_length += decoded_length;
-            quartet_count = 0;
-        }
-    }
-
-    return quartet_count == 0 && *manifest_length > 0;
-}
-
 static bool start_firmware_download(const update_manifest_t *manifest) {
     char blob_path[160];
     if (snprintf(blob_path, sizeof(blob_path), "%s%s", BLOB_API_PREFIX,
