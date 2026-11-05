@@ -69,14 +69,19 @@ jobs:
           update = Path("update")
           update.mkdir(exist_ok=True)
           (update / "flightwall.uf2").write_bytes(payload)
+          metadata = {
+              "blob_sha": blob_sha,
+              "build": build,
+              "schema": 3,
+              "sha256": sha256,
+              "size": len(payload),
+              "version": version,
+          }
           (update / "payload-info.json").write_text(
-              json.dumps({
-                  "blob_sha": blob_sha,
-                  "build": build,
-                  "sha256": sha256,
-                  "size": len(payload),
-                  "version": version,
-              }, sort_keys=True, indent=2) + "\n"
+              json.dumps(metadata, sort_keys=True, indent=2) + "\n"
+          )
+          (update / "check.json").write_text(
+              json.dumps(metadata, sort_keys=True, separators=(",", ":")) + "\n"
           )
 
           print(f"version={version}")
@@ -90,7 +95,7 @@ jobs:
         run: |
           git config user.name "FlightWall Update Stager"
           git config user.email "actions@users.noreply.github.com"
-          git add update/flightwall.uf2 update/payload-info.json
+          git add update/flightwall.uf2 update/payload-info.json update/check.json
           if git diff --cached --quiet; then
             echo "Payload already current"
             exit 0
