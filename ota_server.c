@@ -275,11 +275,21 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
             state->family_id = block->file_size;
 
             resident_partition_t target_partition = {0};
+            printf("OTA USB: BLOCK %lu FIRST target=0x%08lx family=0x%08lx total=%lu\n",
+                   (unsigned long)block->block_no,
+                   (unsigned long)block->target_addr,
+                   (unsigned long)state->family_id,
+                   (unsigned long)block->num_blocks);
+            stdio_flush();
             ota_stage_set(OTA_STAGE_PARTITION, block->block_no, block->target_addr);
             watchdog_update();
+            printf("OTA USB: PARTITION LOOKUP START\n");
+            stdio_flush();
             rom_flash_flush_cache();
             int partition_rc = rom_get_uf2_target_partition(
                 workarea, sizeof(workarea), state->family_id, &target_partition);
+            printf("OTA USB: PARTITION LOOKUP DONE rc=%d\n", partition_rc);
+            stdio_flush();
             // This ROM call returns a non-negative target partition index on
             // success, not necessarily BOOTROM_OK (zero). Boot ROM failures
             // use negative BOOTROM_ERROR_* values.
@@ -304,6 +314,11 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
             state->flash_update = code_start + XIP_BASE;
             state->write_offset = (int32_t)(code_start + XIP_BASE - block->target_addr);
             state->write_size = code_end - code_start;
+            printf("OTA USB: TARGET PARTITION start=0x%08lx size=%lu offset=%ld\n",
+                   (unsigned long)state->flash_update,
+                   (unsigned long)state->write_size,
+                   (long)state->write_offset);
+            stdio_flush();
         }
 
         if (state->blocks_done != (int)block->block_no ||
@@ -335,8 +350,15 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
             ota_stage_set(OTA_STAGE_ERASE, block->block_no,
                           destination & ~(FLASH_SECTOR_ERASE_SIZE - 1u));
             watchdog_update();
+            printf("OTA USB: ERASE START block=%lu addr=0x%08lx\n",
+                   (unsigned long)block->block_no,
+                   (unsigned long)(destination & ~(FLASH_SECTOR_ERASE_SIZE - 1u)));
+            stdio_flush();
             ret = rom_flash_op(flags, destination & ~(FLASH_SECTOR_ERASE_SIZE - 1u),
                                FLASH_SECTOR_ERASE_SIZE, NULL);
+            printf("OTA USB: ERASE DONE block=%lu rc=%d\n",
+                   (unsigned long)block->block_no, ret);
+            stdio_flush();
             if (ret != BOOTROM_OK) {
                 ota_record_error("FLASH ERASE", ret, block->block_no,
                                  destination & ~(FLASH_SECTOR_ERASE_SIZE - 1u));
@@ -352,7 +374,15 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
         // rom_flash_op() performs its own flash-safe IRQ/core coordination.
         ota_stage_set(OTA_STAGE_PROGRAM, block->block_no, destination);
         watchdog_update();
+        printf("OTA USB: PROGRAM START block=%lu addr=0x%08lx bytes=%lu\n",
+               (unsigned long)block->block_no,
+               (unsigned long)destination,
+               (unsigned long)block->payload_size);
+        stdio_flush();
         ret = rom_flash_op(flags, destination, block->payload_size, block->data);
+        printf("OTA USB: PROGRAM DONE block=%lu rc=%d\n",
+               (unsigned long)block->block_no, ret);
+        stdio_flush();
         if (ret != BOOTROM_OK) {
             ota_record_error("FLASH PROGRAM", ret, block->block_no, destination);
             return -1;
@@ -557,6 +587,8 @@ bool flightwall_ota_http_begin(size_t content_length) {
     tcp_update_server_reset_transfer(ota_state);
     ota_state->http_active = true;
     ota_state->http_expected = content_length;
+    printf("OTA USB: HTTP STAGING BEGIN bytes=%lu\n", (unsigned long)content_length);
+    stdio_flush();
 
     // GitHub OTA is the only path that uses this HTTP staging entry point.
     // Arm a watchdog before the first ROM partition/flash call so a deadlock
