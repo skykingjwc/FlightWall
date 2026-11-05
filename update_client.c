@@ -389,20 +389,17 @@ static err_t receive_body(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_
     }
 
     if (request.kind == REQUEST_FIRMWARE && !request.failed) {
-        // Apply TCP backpressure until the main loop has drained queued
-        // firmware bytes. This prevents the TLS receive callback from
-        // outrunning the 64 KiB decoded queue.
+        // Withhold TCP receive-window credit until the main loop has drained
+        // queued firmware bytes to flash. This applies natural backpressure to
+        // GitHub instead of allowing the callback to outrun available RAM.
         request.firmware_pcb = pcb;
         request.tcp_credit_pending += received_now;
     } else {
         altcp_recved(pcb, received_now);
     }
 
-    // We consumed and freed this pbuf, so the lwIP raw API requires ERR_OK.
-    // Any local decode failure is recorded in request.failed and handled by
-    // the main loop instead of returning ERR_BUF after freeing the pbuf.
     pbuf_free(p);
-    return ERR_OK;
+    return request.failed ? ERR_BUF : ERR_OK;
 }
 
 static void request_finished(void *arg, httpc_result_t result, u32_t rx_content_len,
@@ -944,13 +941,15 @@ static bool drain_firmware_queue(void) {
         }
     }
 
-    // Return receive-window credit only after queued firmware has been
-    // consumed. This runs from the main loop, so take the CYW43/lwIP lock
-    // before touching the altcp PCB.
+    // Return receive-window credit only after queued data has been consumed.
+    // Take the CYW43/lwIP lock because this runs from the display/main loop.
     if (firmware_queue_used() <= (FIRMWARE_QUEUE_CAPACITY * 3u) / 4u &&
         request.tcp_credit_pending != 0) {
         cyw43_arch_lwip_begin();
         if (request.firmware_pcb && !request.done) {
+            // altcp_recved()/tcp_recved() accept a 16-bit length. Keep the
+            // accounting in 32 bits, but return it to lwIP in bounded chunks
+            // so credit can never truncate at 64 KiB and stall the sender.
             while (request.tcp_credit_pending != 0) {
                 uint16_t credit = request.tcp_credit_pending > 0xffffu
                     ? 0xffffu
