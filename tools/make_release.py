@@ -3,28 +3,19 @@
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import struct
-import subprocess
-import tempfile
 
 UF2_MAGIC_START0 = 0x0A324655
 UF2_MAGIC_START1 = 0x9E5D5157
 
-def run(command: list[str]) -> None:
-    subprocess.run(command, check=True)
-
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build the signed FlightWall update feed")
+    parser = argparse.ArgumentParser(description="Build the FlightWall update feed")
     parser.add_argument("--version", required=True)
     parser.add_argument("--build", required=True, type=int)
     parser.add_argument("--uf2", required=True, type=Path)
-    parser.add_argument("--private-key", required=True, type=Path)
-    parser.add_argument("--schema", type=int, choices=(2, 3), default=3,
-                        help="signed feed schema; use 2 only for the 1.6.41 -> 1.6.42 migration")
     parser.add_argument("--output-dir", type=Path, default=Path("update"))
     args = parser.parse_args()
 
@@ -32,10 +23,8 @@ def main() -> int:
         parser.error("--version must use major.minor.patch")
     if args.build <= 0:
         parser.error("--build must be positive")
-    if not args.uf2.is_file() or not args.private_key.is_file():
-        parser.error("the UF2 and private key must exist")
-    if os.stat(args.private_key).st_mode & 0o077:
-        parser.error("private key permissions must not allow group or other access")
+    if not args.uf2.is_file():
+        parser.error("the UF2 must exist")
 
     full_image = args.uf2.read_bytes()
     if len(full_image) < 1024 or len(full_image) % 512:
@@ -52,39 +41,22 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     firmware_path = args.output_dir / "flightwall.uf2"
     manifest_path = args.output_dir / "manifest.json"
-    signature_path = args.output_dir / "manifest.sig"
-    signature_hex_path = args.output_dir / "manifest.sig.hex"
     check_path = args.output_dir / "check.json"
     payload_info_path = args.output_dir / "payload-info.json"
     firmware_path.write_bytes(payload)
 
     manifest = {
         "build": args.build,
-        "schema": args.schema,
+        "schema": 3,
         "sha256": digest,
         "size": len(payload),
         "version": args.version,
     }
-    if args.schema == 2:
-        manifest["blob_sha"] = blob_sha
+    manifest["blob_sha"] = blob_sha
     manifest_bytes = (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode()
     manifest_path.write_bytes(manifest_bytes)
-    run(["openssl", "dgst", "-sha256", "-sign", str(args.private_key),
-         "-out", str(signature_path), str(manifest_path)])
 
-    with tempfile.TemporaryDirectory() as temporary_directory:
-        public_key = Path(temporary_directory) / "public.pem"
-        run(["openssl", "pkey", "-in", str(args.private_key), "-pubout",
-             "-out", str(public_key)])
-        run(["openssl", "dgst", "-sha256", "-verify", str(public_key),
-             "-signature", str(signature_path), str(manifest_path)])
-
-    signature_hex = signature_path.read_bytes().hex()
-    signature_hex_path.write_text(signature_hex + "\n")
     check = dict(manifest)
-    if args.schema == 3:
-        check["blob_sha"] = blob_sha
-    check["signature_hex"] = signature_hex
     check_path.write_text(json.dumps(check, sort_keys=True, separators=(",", ":")) + "\n")
     payload_info_path.write_text(
         json.dumps({
@@ -95,7 +67,7 @@ def main() -> int:
         }, sort_keys=True, indent=2) + "\n"
     )
 
-    print(f"release {args.version} build {args.build} schema {args.schema}")
+    print(f"release {args.version} build {args.build} schema 3")
     print(f"payload {len(payload)} bytes")
     print(f"sha256 {digest}")
     print(f"blob_sha {blob_sha}")
