@@ -387,15 +387,12 @@ static err_t receive_body(void *arg, struct altcp_pcb *pcb, struct pbuf *p, err_
         }
     }
 
-    if (request.kind == REQUEST_FIRMWARE && !request.failed) {
-        // Withhold TCP receive-window credit until the main loop has drained
-        // queued firmware bytes to flash. This applies natural backpressure to
-        // GitHub instead of allowing the callback to outrun available RAM.
-        request.firmware_pcb = pcb;
-        request.tcp_credit_pending += received_now;
-    } else {
-        altcp_recved(pcb, received_now);
-    }
+    // Each staged firmware chunk is deliberately smaller than the 64 KiB
+    // firmware queue, so the whole decoded chunk can fit in RAM. Return TCP
+    // credit immediately and do not touch flash until this HTTP request has
+    // completely finished. This keeps rom_flash_op() isolated from live
+    // TLS/lwIP activity.
+    altcp_recved(pcb, received_now);
 
     pbuf_free(p);
     return ERR_OK;
@@ -923,6 +920,10 @@ static bool drain_firmware_queue(void) {
 }
 
 static bool process_firmware_result(void) {
+    // A complete 32 KiB firmware chunk fits in RAM. Wait until GitHub has
+    // closed out the HTTP request before erasing/programming any flash.
+    if (!request.done) return false;
+
     if (!drain_firmware_queue()) {
         const char *flash_detail = flightwall_ota_last_error();
         const char *reason = request.failure_reason[0] ? request.failure_reason : "UNKNOWN";
