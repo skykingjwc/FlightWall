@@ -9,7 +9,6 @@
 #include "lwip/altcp_tls.h"
 #include "lwip/apps/http_client.h"
 #include "lwip/pbuf.h"
-#include "mbedtls/pk.h"
 #include "mbedtls/sha256.h"
 #include "mbedtls/ssl.h"
 #include "pico/cyw43_arch.h"
@@ -17,14 +16,12 @@
 
 #include "ota_server.h"
 #include "flightwall_settings.h"
-#include "update_public_key.h"
 
 #define UPDATE_API_HOST "api.github.com"
 #define UPDATE_PORT 443
 #define CHECK_API_PATH "/repos/skykingjwc/FlightWall/contents/update/check.json?ref=main"
 #define BLOB_API_PREFIX "/repos/skykingjwc/FlightWall/git/blobs/"
 #define SMALL_RESPONSE_CAPACITY 4096u
-#define SIGNATURE_CAPACITY 96u
 #define UPDATE_TIMEOUT_MS 60000u
 #define UPDATE_INTERVAL_MS (6u * 60u * 60u * 1000u)
 #define UPDATE_RETRY_MS (60u * 60u * 1000u)
@@ -90,8 +87,6 @@ static httpc_connection_t http_connection;
 static update_request_t request;
 static uint8_t small_response[SMALL_RESPONSE_CAPACITY + 1];
 static uint8_t feed_bytes[SMALL_RESPONSE_CAPACITY + 1];
-static uint8_t manifest_bytes[2048];
-static uint8_t signature[SIGNATURE_CAPACITY];
 static uint8_t firmware_queue[FIRMWARE_QUEUE_CAPACITY];
 static uint32_t last_check_ms;
 static bool last_check_succeeded;
@@ -569,22 +564,6 @@ static bool fetch_api_file(const char *path, uint8_t *output, size_t capacity,
                                     output, capacity, output_length);
 }
 
-static bool verify_manifest_signature(const uint8_t *manifest, size_t manifest_length,
-                                      const uint8_t *sig, size_t signature_length) {
-    uint8_t digest[32];
-    if (mbedtls_sha256(manifest, manifest_length, digest, 0) != 0) return false;
-    mbedtls_pk_context key;
-    mbedtls_pk_init(&key);
-    int rc = mbedtls_pk_parse_public_key(&key, flightwall_update_public_key_der,
-                                         flightwall_update_public_key_der_size);
-    if (rc == 0) {
-        rc = mbedtls_pk_verify(&key, MBEDTLS_MD_SHA256, digest, sizeof(digest),
-                               sig, signature_length);
-    }
-    mbedtls_pk_free(&key);
-    return rc == 0;
-}
-
 static const char *find_json_value(const char *json, size_t length, const char *key) {
     char needle[32];
     int needle_length = snprintf(needle, sizeof(needle), "\"%s\"", key);
@@ -629,19 +608,6 @@ static bool json_u32(const char *json, size_t length, const char *key, uint32_t 
     unsigned long parsed = strtoul(number, &end, 10);
     if (!end || *end != '\0' || parsed > UINT32_MAX) return false;
     *value = (uint32_t)parsed;
-    return true;
-}
-
-static bool hex_bytes(const char *hex, size_t hex_length,
-                      uint8_t *output, size_t output_capacity, size_t *output_length) {
-    if (!hex || (hex_length % 2) != 0 || hex_length / 2 > output_capacity) return false;
-    size_t used = 0;
-    for (size_t i = 0; i < hex_length; i += 2) {
-        char pair[3] = {hex[i], hex[i + 1], '\0'};
-        if (!isxdigit((unsigned char)pair[0]) || !isxdigit((unsigned char)pair[1])) return false;
-        output[used++] = (uint8_t)strtoul(pair, NULL, 16);
-    }
-    *output_length = used;
     return true;
 }
 
@@ -816,57 +782,9 @@ static bool process_feed_result(void) {
         return false;
     }
 
-    const char *envelope = (const char *)feed_bytes;
-    char signature_hex[2 * SIGNATURE_CAPACITY + 1];
-    char sha_text[65];
-
     update_manifest_t manifest;
-    if (!parse_manifest(feed_bytes, envelope_length, &manifest) ||
-        !json_string(envelope, envelope_length, "sha256", sha_text, sizeof(sha_text)) ||
-        !json_string(envelope, envelope_length, "signature_hex",
-                     signature_hex, sizeof(signature_hex))) {
+    if (!parse_manifest(feed_bytes, envelope_length, &manifest)) {
         snprintf(update_status, sizeof(update_status), "BAD UPDATE FEED");
-        finish_update_session();
-        return false;
-    }
-
-    int manifest_length;
-    if (manifest.schema == 2) {
-        manifest_length = snprintf((char *)manifest_bytes, sizeof(manifest_bytes),
-            "{\"blob_sha\":\"%s\",\"build\":%lu,\"schema\":2,"
-            "\"sha256\":\"%s\",\"size\":%lu,\"version\":\"%s\"}\n",
-            manifest.blob_sha,
-            (unsigned long)manifest.build,
-            sha_text,
-            (unsigned long)manifest.size,
-            manifest.version);
-    } else {
-        manifest_length = snprintf((char *)manifest_bytes, sizeof(manifest_bytes),
-            "{\"build\":%lu,\"schema\":3,"
-            "\"sha256\":\"%s\",\"size\":%lu,\"version\":\"%s\"}\n",
-            (unsigned long)manifest.build,
-            sha_text,
-            (unsigned long)manifest.size,
-            manifest.version);
-    }
-    if (manifest_length <= 0 || (size_t)manifest_length >= sizeof(manifest_bytes)) {
-        snprintf(update_status, sizeof(update_status), "BAD MANIFEST REBUILD");
-        finish_update_session();
-        return false;
-    }
-
-    size_t signature_length = 0;
-    if (!hex_bytes(signature_hex, strlen(signature_hex),
-                   signature, SIGNATURE_CAPACITY, &signature_length) ||
-        signature_length == 0) {
-        snprintf(update_status, sizeof(update_status), "BAD SIGNATURE FORMAT");
-        finish_update_session();
-        return false;
-    }
-
-    if (!verify_manifest_signature(manifest_bytes, (size_t)manifest_length,
-                                   signature, signature_length)) {
-        snprintf(update_status, sizeof(update_status), "BAD UPDATE SIGNATURE");
         finish_update_session();
         return false;
     }
@@ -882,9 +800,8 @@ static bool process_feed_result(void) {
     printf("FlightWall update %s (build %lu, %lu bytes) available\n",
            manifest.version, (unsigned long)manifest.build, (unsigned long)manifest.size);
 
-    // Keep the already-verified manifest in RAM. A manual Install click can
-    // then go straight to the firmware blob instead of repeating the feed
-    // request and signature check over a second TLS connection.
+    // Cache the already-parsed update metadata so a manual Install click can
+    // go straight to the firmware blob without repeating the feed request.
     verified_manifest = manifest;
     verified_manifest_available = true;
 
@@ -1011,7 +928,7 @@ static bool process_firmware_result(void) {
     // For a completed firmware body, HTTP status + exact byte counts are
     // authoritative. GitHub may close the TCP connection immediately after
     // sending the full response, which lwIP can surface as HTTPC_RESULT_ERR_CLOSED
-    // even though the entire signed payload arrived successfully.
+    // even though the entire payload arrived successfully.
     //
     // An early/truncated close is still rejected because blob completion,
     // decoded byte count, flashed byte count and SHA-256 must all match.
@@ -1163,7 +1080,7 @@ bool flightwall_update_process_requests(void) {
         }
 
         // Direct install without a prior successful check still performs a
-        // fresh signed feed lookup.
+        // fresh update feed lookup.
         (void)start_feed_check(true);
         return false;
     }
