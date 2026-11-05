@@ -1,8 +1,8 @@
 {
-  "blob_sha": "8918d7f256ec910f1c6d93f312d27b313253729d",
-  "build": 10669,
+  "blob_sha": "c94637a065cd1f9cf8888467a6833cf4460165f4",
+  "build": 10671,
   "schema": 3,
-  "sha256": "d3deb2f2d9231350e7f0c74a27188cb2f8a3e152ff98c6c18a84d8896bee86c9",
-  "size": 1220608,
-  "version": "1.6.69"
+  "sha256": "22974dd01c0dfad52f6850eb1d0d4068cb76a035fef5efc175b56cd87e7168e6",
+  "size": 1216512,
+  "version": "1.6.71"
 }
