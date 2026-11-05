@@ -69,10 +69,29 @@ jobs:
           update = Path("update")
           update.mkdir(exist_ok=True)
           (update / "flightwall.uf2").write_bytes(payload)
+
+          chunk_dir = update / "chunks"
+          if chunk_dir.exists():
+              import shutil
+              shutil.rmtree(chunk_dir)
+          chunk_dir.mkdir()
+          chunk_size = 32768
+          chunk_shas = []
+          for index, offset in enumerate(range(0, len(payload), chunk_size)):
+              chunk = bytes(payload[offset:offset + chunk_size])
+              chunk_path = chunk_dir / f"{index:03d}.bin"
+              chunk_path.write_bytes(chunk)
+              chunk_sha = hashlib.sha1(
+                  f"blob {len(chunk)}\0".encode() + chunk
+              ).hexdigest()
+              chunk_shas.append(chunk_sha)
+
           metadata = {
               "blob_sha": blob_sha,
               "build": build,
-              "schema": 3,
+              "chunk_size": chunk_size,
+              "chunks": ",".join(chunk_shas),
+              "schema": 4,
               "sha256": sha256,
               "size": len(payload),
               "version": version,
@@ -95,7 +114,7 @@ jobs:
         run: |
           git config user.name "FlightWall Update Stager"
           git config user.email "actions@users.noreply.github.com"
-          git add update/flightwall.uf2 update/payload-info.json update/check.json
+          git add -A update/flightwall.uf2 update/payload-info.json update/check.json update/chunks
           if git diff --cached --quiet; then
             echo "Payload already current"
             exit 0
