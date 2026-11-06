@@ -1010,7 +1010,7 @@ static bool process_firmware_result(void) {
                    (unsigned)current_chunk_http_retries);
             next_chunk_pending = true;
             next_chunk_attempts = 0;
-            next_chunk_start_at_us = time_us_64() + 1000000u;
+            next_chunk_start_at_us = time_us_64() + 500000u;
             return false;
         }
 
@@ -1033,7 +1033,7 @@ static bool process_firmware_result(void) {
         current_chunk_http_retries = 0;
         next_chunk_pending = true;
         next_chunk_attempts = 0;
-        next_chunk_start_at_us = time_us_64() + 1000000u;
+        next_chunk_start_at_us = time_us_64() + 500000u;
         return false;
     }
 

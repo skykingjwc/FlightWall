@@ -374,15 +374,7 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
         // rom_flash_op() performs its own flash-safe IRQ/core coordination.
         ota_stage_set(OTA_STAGE_PROGRAM, block->block_no, destination);
         watchdog_update();
-        printf("OTA USB: PROGRAM START block=%lu addr=0x%08lx bytes=%lu\n",
-               (unsigned long)block->block_no,
-               (unsigned long)destination,
-               (unsigned long)block->payload_size);
-        stdio_flush();
         ret = rom_flash_op(flags, destination, block->payload_size, block->data);
-        printf("OTA USB: PROGRAM DONE block=%lu rc=%d\n",
-               (unsigned long)block->block_no, ret);
-        stdio_flush();
         if (ret != BOOTROM_OK) {
             ota_record_error("FLASH PROGRAM", ret, block->block_no, destination);
             return -1;
