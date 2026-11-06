@@ -83,6 +83,7 @@ typedef struct {
 static struct altcp_tls_config *tls_config;
 static altcp_allocator_t tls_allocator;
 static const char *tls_sni_host = UPDATE_API_HOST;
+static struct altcp_pcb *active_update_pcb;
 // lwIP retains a pointer to these settings for the lifetime of each request,
 // so this must not be a stack-local object in start_get(). Requests are
 // serialized by flightwall_update_check_now().
@@ -118,6 +119,7 @@ static uint8_t next_chunk_attempts;
 static uint64_t next_chunk_start_at_us;
 static size_t current_chunk_decoded_start;
 static uint8_t current_chunk_http_retries;
+static uint64_t current_chunk_started_at_us;
 
 static uint32_t now_ms(void) {
     return to_ms_since_boot(get_absolute_time());
@@ -131,6 +133,7 @@ static struct altcp_pcb *tls_alloc_with_sni(void *arg, u8_t ip_type) {
         altcp_abort(pcb);
         return NULL;
     }
+    active_update_pcb = pcb;
     return pcb;
 }
 
@@ -411,6 +414,7 @@ static void request_finished(void *arg, httpc_result_t result, u32_t rx_content_
     request.result = result;
     request.http_status = srv_res;
     request.firmware_pcb = NULL;
+    active_update_pcb = NULL;
     request.done = true;
 }
 
@@ -496,10 +500,12 @@ static bool start_get(const char *host, const char *path) {
     http_connection.altcp_allocator = &tls_allocator;
     http_connection.result_fn = request_finished;
     http_connection.headers_done_fn = headers_received;
+    active_update_pcb = NULL;
     cyw43_arch_lwip_begin();
     err_t rc = httpc_get_file_dns(host, UPDATE_PORT, path, &http_connection,
                                   receive_body, NULL, NULL);
     cyw43_arch_lwip_end();
+    if (rc != ERR_OK) active_update_pcb = NULL;
     return rc == ERR_OK;
 }
 
@@ -769,7 +775,9 @@ static bool start_chunk_download(void) {
            (unsigned long)(current_chunk_index + 1u),
            (unsigned long)pending_manifest.chunk_count);
     current_chunk_decoded_start = request.decoded_received;
-    return start_get(UPDATE_API_HOST, blob_path);
+    bool started = start_get(UPDATE_API_HOST, blob_path);
+    if (started) current_chunk_started_at_us = time_us_64();
+    return started;
 }
 
 static bool start_firmware_download(const update_manifest_t *manifest) {
@@ -788,6 +796,7 @@ static bool start_firmware_download(const update_manifest_t *manifest) {
     next_chunk_start_at_us = 0;
     current_chunk_decoded_start = 0;
     current_chunk_http_retries = 0;
+    current_chunk_started_at_us = 0;
 
     if (!request.sha_active || !start_chunk_download()) {
         if (request.sha_active) {
@@ -953,6 +962,26 @@ static bool process_firmware_result(void) {
             return false;
         }
         next_chunk_start_at_us = time_us_64() + 250000u;
+        return false;
+    }
+
+    // If GitHub accepted the request but it produces no firmware bytes and
+    // never completes, abort only that HTTP/TLS connection after 10 seconds.
+    // lwIP's normal error callback then feeds the existing safe retry path.
+    if (!request.done &&
+        current_chunk_started_at_us != 0 &&
+        request.decoded_received == current_chunk_decoded_start &&
+        time_us_64() - current_chunk_started_at_us >= 10000000u &&
+        active_update_pcb != NULL) {
+        printf("OTA chunk %lu/%lu stalled empty for 10s; aborting request\n",
+               (unsigned long)(current_chunk_index + 1u),
+               (unsigned long)pending_manifest.chunk_count);
+        struct altcp_pcb *stalled_pcb = active_update_pcb;
+        active_update_pcb = NULL;
+        current_chunk_started_at_us = 0;
+        cyw43_arch_lwip_begin();
+        altcp_abort(stalled_pcb);
+        cyw43_arch_lwip_end();
         return false;
     }
 
