@@ -221,10 +221,10 @@ checkUpdateButton.addEventListener('click', async () => {
 });
 
 async function waitForSignedUpdateRestart() {
-  let sawOffline = false;
-  let consecutiveOnline = 0;
+  const installedVersion = document.querySelector('.status span:nth-child(2)')?.textContent.trim() || '';
+  let lastKnownStatus = autoUpdateStatus.textContent.trim();
 
-  for (let attempt = 0; attempt < 180; ++attempt) {
+  for (let attempt = 0; attempt < 240; ++attempt) {
     await new Promise(resolve => setTimeout(resolve, 750));
 
     try {
@@ -241,23 +241,31 @@ async function waitForSignedUpdateRestart() {
       const doc = new DOMParser().parseFromString(page, 'text/html');
       const value = doc.getElementById('autoUpdateStatus');
       const text = value ? value.textContent.trim() : '';
+      const firmware = doc.querySelector('.status span:nth-child(2)')?.textContent.trim() || '';
 
-      if (text) autoUpdateStatus.textContent = text;
+      if (text) {
+        lastKnownStatus = text;
+        autoUpdateStatus.textContent = text;
+      }
 
-      if (sawOffline) {
-        consecutiveOnline++;
-        if (consecutiveOnline >= 2) {
-          window.location.replace('/index.shtml');
-          return;
-        }
+      // A brief local HTTP outage can happen while flash is being programmed.
+      // Do not treat that as a reboot. The update is complete only after the
+      // device comes back serving a different firmware version.
+      if (firmware && installedVersion && firmware !== installedVersion) {
+        autoUpdateStatus.textContent = 'UPDATE COMPLETE - RELOADING';
+        await new Promise(resolve => setTimeout(resolve, 500));
+        window.location.replace('/index.shtml?updated=' + Date.now());
+        return;
       }
     } catch (error) {
-      sawOffline = true;
-      consecutiveOnline = 0;
-      autoUpdateStatus.textContent = 'RESTARTING - WAITING FOR FLIGHTWALL';
+      autoUpdateStatus.textContent =
+        lastKnownStatus.startsWith('VERIFIED ')
+          ? 'UPDATE VERIFIED - RESTARTING'
+          : lastKnownStatus + ' - FLIGHTWALL BUSY';
     }
   }
 
+  autoUpdateStatus.textContent = 'UPDATE STATUS UNKNOWN - RELOAD PAGE';
   installAvailableButton.disabled = false;
 }
 
