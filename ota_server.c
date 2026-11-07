@@ -46,6 +46,7 @@ typedef struct TCP_UPDATE_SERVER_T_ {
     int32_t write_offset;
     uint32_t write_size;
     uint32_t highest_erased_sector;
+    bool bulk_erase_done;
     bool http_active;
     size_t http_expected;
     size_t http_received;
@@ -163,6 +164,7 @@ static void tcp_update_server_reset_transfer(TCP_UPDATE_SERVER_T *state) {
     state->write_offset = 0;
     state->write_size = 0;
     state->highest_erased_sector = UINT32_MAX;
+    state->bulk_erase_done = false;
     state->http_active = false;
     state->http_expected = 0;
     state->http_received = 0;
@@ -339,32 +341,36 @@ static int process_uf2_buffer(TCP_UPDATE_SERVER_T *state) {
 
         cflash_flags_t flags;
         int ret;
-        uint32_t destination_sector = (uint32_t)((destination - XIP_BASE) / FLASH_SECTOR_ERASE_SIZE);
-        if (destination_sector != state->highest_erased_sector) {
+        if (!state->bulk_erase_done) {
+            const uintptr_t erase_start =
+                destination & ~(uintptr_t)(FLASH_SECTOR_ERASE_SIZE - 1u);
+            const size_t image_bytes = (size_t)state->num_blocks * 256u;
+            const size_t erase_bytes =
+                (image_bytes + FLASH_SECTOR_ERASE_SIZE - 1u) &
+                ~(size_t)(FLASH_SECTOR_ERASE_SIZE - 1u);
+
             flags.flags =
                 (CFLASH_OP_VALUE_ERASE << CFLASH_OP_LSB) |
                 (CFLASH_SECLEVEL_VALUE_SECURE << CFLASH_SECLEVEL_LSB) |
                 (CFLASH_ASPACE_VALUE_STORAGE << CFLASH_ASPACE_LSB);
             // Pico SDK 2.3.0's rom_flash_op() already uses flash_safe_execute()
-            // internally. Do not wrap it in a second multicore lockout.
-            ota_stage_set(OTA_STAGE_ERASE, block->block_no,
-                          destination & ~(FLASH_SECTOR_ERASE_SIZE - 1u));
+            // internally. Erase the complete incoming image region once.
+            ota_stage_set(OTA_STAGE_ERASE, block->block_no, erase_start);
             watchdog_update();
-            printf("OTA USB: ERASE START block=%lu addr=0x%08lx\n",
+            printf("OTA USB: BULK ERASE START block=%lu addr=0x%08lx bytes=%lu\n",
                    (unsigned long)block->block_no,
-                   (unsigned long)(destination & ~(FLASH_SECTOR_ERASE_SIZE - 1u)));
+                   (unsigned long)erase_start,
+                   (unsigned long)erase_bytes);
             stdio_flush();
-            ret = rom_flash_op(flags, destination & ~(FLASH_SECTOR_ERASE_SIZE - 1u),
-                               FLASH_SECTOR_ERASE_SIZE, NULL);
-            printf("OTA USB: ERASE DONE block=%lu rc=%d\n",
+            ret = rom_flash_op(flags, erase_start, erase_bytes, NULL);
+            printf("OTA USB: BULK ERASE DONE block=%lu rc=%d\n",
                    (unsigned long)block->block_no, ret);
             stdio_flush();
             if (ret != BOOTROM_OK) {
-                ota_record_error("FLASH ERASE", ret, block->block_no,
-                                 destination & ~(FLASH_SECTOR_ERASE_SIZE - 1u));
+                ota_record_error("FLASH ERASE", ret, block->block_no, erase_start);
                 return -1;
             }
-            state->highest_erased_sector = destination_sector;
+            state->bulk_erase_done = true;
         }
 
         flags.flags =
