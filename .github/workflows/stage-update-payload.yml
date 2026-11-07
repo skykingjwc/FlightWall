@@ -121,4 +121,9 @@ jobs:
           fi
           VERSION="$(python3 -c 'import json; print(json.load(open("update/payload-info.json"))["version"])')"
           git commit -m "Stage FlightWall update payload v${VERSION}"
+
+          # Another generated-content workflow (for example airline assets)
+          # may have updated main while this build was running. Rebase the
+          # generated payload commit onto the current remote head before push.
+          git pull --rebase origin main
           git push
