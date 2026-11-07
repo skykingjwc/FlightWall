@@ -1048,6 +1048,19 @@ static bool process_firmware_result(void) {
                    (unsigned long)(current_chunk_index + 1u),
                    (unsigned long)pending_manifest.chunk_count,
                    (unsigned)current_chunk_http_retries);
+
+            // Recreate the TLS client configuration after a zero-byte failure.
+            // Repeated retries have shown that reusing the same config can leave
+            // the update client stuck in an identical failure state.
+            update_tls_end();
+            if (!update_tls_begin()) {
+                flightwall_ota_http_abort();
+                last_check_succeeded = false;
+                snprintf(update_status, sizeof(update_status), "TLS RESTART FAILED");
+                update_state = UPDATE_STATE_IDLE;
+                return false;
+            }
+
             next_chunk_pending = true;
             next_chunk_attempts = 0;
             next_chunk_start_at_us = time_us_64() + 500000u;
