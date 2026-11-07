@@ -39,6 +39,36 @@ project(hub75_demo C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
+# lwIP's bundled httpc client has no public hook for adding request headers.
+# Patch its host-based GET format at configure time to ask FlightWall for one
+# optional per-host header. FlightWall returns Authorization only for api.github.com.
+set(FLIGHTWALL_HTTPC_SOURCE "${PICO_LWIP_PATH}/src/apps/http/http_client.c")
+if(EXISTS "${FLIGHTWALL_HTTPC_SOURCE}")
+    file(READ "${FLIGHTWALL_HTTPC_SOURCE}" FLIGHTWALL_HTTPC_TEXT)
+    if(NOT FLIGHTWALL_HTTPC_TEXT MATCHES "HTTPC_REQ_11_HOST_FORMAT.*flightwall_httpc_extra_headers")
+        string(REPLACE
+            [=[#define HTTPC_REQ_11_HOST "GET %s HTTP/1.1\r\n" /* URI */\]=]
+            [=[extern const char *flightwall_httpc_extra_headers(const char *server_name);
+#define HTTPC_REQ_11_HOST "GET %s HTTP/1.1\r\n" /* URI */\]=]
+            FLIGHTWALL_HTTPC_TEXT "${FLIGHTWALL_HTTPC_TEXT}")
+        string(REPLACE
+            [=[    "Host: %s\r\n" /* server name */ \
+    "Connection: Close\r\n"]=]
+            [=[    "Host: %s\r\n" /* server name */ \
+    "%s" /* optional application-supplied headers */ \
+    "Connection: Close\r\n"]=]
+            FLIGHTWALL_HTTPC_TEXT "${FLIGHTWALL_HTTPC_TEXT}")
+        string(REPLACE
+            [=[#define HTTPC_REQ_11_HOST_FORMAT(uri, srv_name) HTTPC_REQ_11_HOST, uri, HTTPC_CLIENT_AGENT, srv_name]=]
+            [=[#define HTTPC_REQ_11_HOST_FORMAT(uri, srv_name) HTTPC_REQ_11_HOST, uri, HTTPC_CLIENT_AGENT, srv_name, flightwall_httpc_extra_headers(srv_name)]=]
+            FLIGHTWALL_HTTPC_TEXT "${FLIGHTWALL_HTTPC_TEXT}")
+        if(NOT FLIGHTWALL_HTTPC_TEXT MATCHES "HTTPC_REQ_11_HOST_FORMAT.*flightwall_httpc_extra_headers")
+            message(FATAL_ERROR "Unable to patch lwIP httpc for FlightWall request headers")
+        endif()
+        file(WRITE "${FLIGHTWALL_HTTPC_SOURCE}" "${FLIGHTWALL_HTTPC_TEXT}")
+    endif()
+endif()
+
 add_subdirectory(utils)
 
 # Add library. This is the core HUB75 driver.
@@ -91,7 +121,7 @@ add_executable(hub75_demo
 )
 
 pico_set_program_name(hub75_demo "hub75_demo")
-pico_set_program_version(hub75_demo "1.6.90")
+pico_set_program_version(hub75_demo "1.6.91")
 
 pico_set_float_implementation(hub75_demo pico)
 
@@ -113,8 +143,8 @@ target_compile_definitions(hub75_demo PRIVATE
         PICO_CRT0_IMAGE_TYPE_TBYB=${FLIGHTWALL_TBYB_VALUE}
         PICO_FLASH_BANK_STORAGE_OFFSET=0x3EB000
         CYW43_HOST_NAME="flightwall"
-        FLIGHTWALL_VERSION="1.6.90"
-        FLIGHTWALL_BUILD_NUMBER=10690
+        FLIGHTWALL_VERSION="1.6.91"
+        FLIGHTWALL_BUILD_NUMBER=10691
 )
 
 target_link_libraries(hub75_demo PRIVATE

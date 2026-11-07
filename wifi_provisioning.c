@@ -132,7 +132,8 @@ static const char *ssi_tags[] = {
     "swptail",
     "watch",
     "update",
-    "autoinst"
+    "autoinst",
+    "ghtoken"
 };
 
 static void start_http_server(void) {
@@ -576,6 +577,7 @@ typedef enum {
     POST_NONE,
     POST_CREDENTIALS,
     POST_SETTINGS,
+    POST_GITHUB_TOKEN,
     POST_FIRMWARE
 } post_kind_t;
 static post_kind_t current_post_kind;
@@ -593,6 +595,14 @@ err_t httpd_post_begin(void *connection, const char *uri, __unused const char *h
         post_credentials_ok = false;
         // default redirect; overwritten on success in httpd_post_finished
         snprintf(response_uri, response_uri_len, "/index.shtml");
+        *post_auto_wnd = 1;
+        return ERR_OK;
+    }
+    if (strcmp(uri, "/github_token.cgi") == 0) {
+        current_post_connection = connection;
+        current_post_kind = POST_GITHUB_TOKEN;
+        post_settings_ok = false;
+        snprintf(response_uri, response_uri_len, "/settings-failed.html");
         *post_auto_wnd = 1;
         return ERR_OK;
     }
@@ -627,6 +637,17 @@ err_t httpd_post_receive_data(void *connection, struct pbuf *p) {
                 }
             }
         }
+    } else if (connection == current_post_connection && current_post_kind == POST_GITHUB_TOKEN) {
+        char token_encoded[FLIGHTWALL_GITHUB_TOKEN_SIZE * 3];
+        char token[FLIGHTWALL_GITHUB_TOKEN_SIZE];
+        char *value = post_param_value(p, "token=", token_encoded, sizeof(token_encoded));
+        if (value) {
+            url_decode(token, value, sizeof(token));
+            post_settings_ok = flightwall_settings_set_github_token(token);
+            if (post_settings_ok)
+                printf("GitHub API token %s\n", token[0] ? "saved" : "cleared");
+        }
+        ret = ERR_OK;
     } else if (connection == current_post_connection && current_post_kind == POST_SETTINGS) {
         char lat_buf[24], lon_buf[24], radius_buf[12], brightness_buf[12], basis_buf[12], refresh_buf[12], display_buf[12];
         char sweep_brightness_buf[12], sweep_tail_buf[12];
@@ -705,7 +726,8 @@ void httpd_post_finished(void *connection, char *response_uri, u16_t response_ur
         bool update_ok = post_credentials_ok && flightwall_ota_http_finish();
         snprintf(response_uri, response_uri_len,
                  update_ok ? "/update-ok.html" : "/update-failed.html");
-    } else if (connection == current_post_connection && current_post_kind == POST_SETTINGS) {
+    } else if (connection == current_post_connection &&
+               (current_post_kind == POST_SETTINGS || current_post_kind == POST_GITHUB_TOKEN)) {
         snprintf(response_uri, response_uri_len,
                  post_settings_ok ? "/settings-saved.html" : "/settings-failed.html");
     } else if (connection == current_post_connection && current_post_kind == POST_CREDENTIALS) {
@@ -965,6 +987,11 @@ static u16_t ssi_handler(int iIndex, char *pcInsert, int iInsertLen
         case 17: { // automatic-install checkbox state
             printed = snprintf(pcInsert, iInsertLen, "%s",
                                flightwall_settings_get()->auto_install_updates ? "checked" : "");
+            break;
+        }
+        case 18: { // GitHub API token
+            printed = snprintf(pcInsert, iInsertLen, "%s",
+                               flightwall_settings_get()->github_token);
             break;
         }
         default: { // unknown tag

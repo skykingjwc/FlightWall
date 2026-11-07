@@ -10,7 +10,7 @@
 #include "pico/flash.h"
 
 #define SETTINGS_MAGIC 0x46575331u  // "FWS1"
-#define SETTINGS_VERSION 6u
+#define SETTINGS_VERSION 7u
 #define SETTINGS_FLASH_OFFSET (PICO_FLASH_BANK_STORAGE_OFFSET + FLASH_SECTOR_SIZE)
 
 typedef struct {
@@ -111,6 +111,26 @@ typedef struct {
     uint32_t checksum;
 } stored_settings_v6_t;
 
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t size;
+    float latitude;
+    float longitude;
+    uint16_t radius_nm;
+    uint8_t brightness_percent;
+    uint8_t panel_output_basis;
+    uint16_t refresh_seconds;
+    uint8_t display_seconds;
+    uint8_t radar_sweep_brightness_percent;
+    uint8_t radar_sweep_tail_degrees;
+    uint8_t auto_install_updates;
+    uint8_t watched_count;
+    char watched[FLIGHTWALL_MAX_WATCHED][FLIGHTWALL_WATCH_ID_SIZE];
+    char github_token[FLIGHTWALL_GITHUB_TOKEN_SIZE];
+    uint32_t checksum;
+} stored_settings_v7_t;
+
 static flightwall_settings_t current_settings;
 static volatile uint32_t settings_generation;
 
@@ -145,6 +165,17 @@ static bool display_seconds_valid(unsigned seconds) {
 static bool radar_settings_valid(unsigned brightness_percent, unsigned tail_degrees) {
     return brightness_percent >= 10 && brightness_percent <= 100 &&
            tail_degrees >= 4 && tail_degrees <= 30;
+}
+
+static bool github_token_valid(const char *token) {
+    if (!token) return false;
+    size_t length = strlen(token);
+    if (length >= FLIGHTWALL_GITHUB_TOKEN_SIZE) return false;
+    for (size_t i = 0; i < length; ++i) {
+        unsigned char c = (unsigned char)token[i];
+        if (!(isalnum(c) || c == '_' || c == '-')) return false;
+    }
+    return true;
 }
 
 static void load_defaults(void) {
@@ -204,7 +235,7 @@ static bool parse_watchlist(const char *text, flightwall_settings_t *settings) {
 
 static bool persist_settings(const flightwall_settings_t *settings) {
     uint8_t sector[FLASH_SECTOR_SIZE] = {0};
-    stored_settings_v6_t *stored = (stored_settings_v6_t *)sector;
+    stored_settings_v7_t *stored = (stored_settings_v7_t *)sector;
     stored->magic = SETTINGS_MAGIC;
     stored->version = SETTINGS_VERSION;
     stored->size = sizeof(*stored);
@@ -220,7 +251,8 @@ static bool persist_settings(const flightwall_settings_t *settings) {
     stored->auto_install_updates = settings->auto_install_updates ? 1u : 0u;
     stored->watched_count = settings->watched_count;
     memcpy(stored->watched, settings->watched, sizeof(stored->watched));
-    stored->checksum = fnv1a(stored, offsetof(stored_settings_v6_t, checksum));
+    snprintf(stored->github_token, sizeof(stored->github_token), "%s", settings->github_token);
+    stored->checksum = fnv1a(stored, offsetof(stored_settings_v7_t, checksum));
 
     cflash_flags_t erase_flags = {
         .flags =
@@ -257,8 +289,40 @@ void flightwall_settings_load(void) {
     bool valid = false;
 
     if (rc == BOOTROM_OK) {
+        const stored_settings_v7_t *v7 = (const stored_settings_v7_t *)sector;
+        if (v7->magic == SETTINGS_MAGIC && v7->version == SETTINGS_VERSION &&
+            v7->size == sizeof(*v7) && v7->watched_count <= FLIGHTWALL_MAX_WATCHED &&
+            v7->auto_install_updates <= 1 &&
+            v7->github_token[FLIGHTWALL_GITHUB_TOKEN_SIZE - 1] == '\0' &&
+            github_token_valid(v7->github_token) &&
+            v7->checksum == fnv1a(v7, offsetof(stored_settings_v7_t, checksum)) &&
+            values_valid(v7->latitude, v7->longitude, v7->radius_nm,
+                         v7->brightness_percent, v7->refresh_seconds) &&
+            panel_output_valid(v7->panel_output_basis) &&
+            display_seconds_valid(v7->display_seconds) &&
+            radar_settings_valid(v7->radar_sweep_brightness_percent,
+                                 v7->radar_sweep_tail_degrees)) {
+            current_settings.latitude = v7->latitude;
+            current_settings.longitude = v7->longitude;
+            current_settings.radius_nm = v7->radius_nm;
+            current_settings.brightness_percent = v7->brightness_percent;
+            current_settings.panel_output_basis = v7->panel_output_basis;
+            current_settings.refresh_seconds = v7->refresh_seconds;
+            current_settings.display_seconds = v7->display_seconds;
+            current_settings.radar_sweep_brightness_percent = v7->radar_sweep_brightness_percent;
+            current_settings.radar_sweep_tail_degrees = v7->radar_sweep_tail_degrees;
+            current_settings.auto_install_updates = v7->auto_install_updates != 0;
+            current_settings.watched_count = v7->watched_count;
+            memcpy(current_settings.watched, v7->watched, sizeof(v7->watched));
+            memcpy(current_settings.github_token, v7->github_token, sizeof(v7->github_token));
+            for (uint8_t i = 0; i < current_settings.watched_count; ++i)
+                current_settings.watched[i][FLIGHTWALL_WATCH_ID_SIZE - 1] = 0;
+            valid = true;
+            printf("loaded FlightWall settings v7\n");
+        }
+
         const stored_settings_v6_t *v6 = (const stored_settings_v6_t *)sector;
-        if (v6->magic == SETTINGS_MAGIC && v6->version == SETTINGS_VERSION &&
+        if (!valid && v6->magic == SETTINGS_MAGIC && v6->version == 6 &&
             v6->size == sizeof(*v6) && v6->watched_count <= FLIGHTWALL_MAX_WATCHED &&
             v6->auto_install_updates <= 1 &&
             v6->checksum == fnv1a(v6, offsetof(stored_settings_v6_t, checksum)) &&
@@ -430,6 +494,18 @@ bool flightwall_settings_update(float latitude, float longitude,
     updated.radar_sweep_tail_degrees = (uint8_t)radar_sweep_tail_degrees;
     if (!parse_watchlist(watchlist, &updated) || !persist_settings(&updated)) return false;
 
+    current_settings = updated;
+    settings_generation++;
+    return true;
+}
+
+bool flightwall_settings_set_github_token(const char *token) {
+    if (!github_token_valid(token)) return false;
+    if (strcmp(current_settings.github_token, token) == 0) return true;
+
+    flightwall_settings_t updated = current_settings;
+    snprintf(updated.github_token, sizeof(updated.github_token), "%s", token);
+    if (!persist_settings(&updated)) return false;
     current_settings = updated;
     settings_generation++;
     return true;

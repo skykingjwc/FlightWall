@@ -127,6 +127,19 @@ static uint32_t github_rate_remaining;
 
 #define GITHUB_API_RETRY_RESERVE 10u
 
+static char github_authorization_header[FLIGHTWALL_GITHUB_TOKEN_SIZE + 32];
+
+const char *flightwall_httpc_extra_headers(const char *server_name) {
+    if (!server_name || strcmp(server_name, UPDATE_API_HOST) != 0) return "";
+
+    const char *token = flightwall_settings_get()->github_token;
+    if (!token || !token[0]) return "";
+
+    snprintf(github_authorization_header, sizeof(github_authorization_header),
+             "Authorization: Bearer %s\r\n", token);
+    return github_authorization_header;
+}
+
 static uint32_t now_ms(void) {
     return to_ms_since_boot(get_absolute_time());
 }

@@ -130,6 +130,12 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
 
   <section class="card">
     <h2>Firmware update</h2>
+    <form action="/github_token.cgi" method="post">
+      <label for="githubToken">GitHub API token:</label><br>
+      <input type="text" id="githubToken" name="token" value="<!--#ghtoken-->" autocomplete="off" style="width:100%;max-width:36rem"><br>
+      <small>Optional. A fine-grained read-only token raises the GitHub API quota. Leave blank and save to return to anonymous access.</small><br><br>
+      <input type="submit" value="Save GitHub token">
+    </form>
     <div class="status">
       <span class="label">Installed</span><span>v<!--#version--></span>
       <span class="label">Update status</span><span id="autoUpdateStatus"><!--#update--></span>

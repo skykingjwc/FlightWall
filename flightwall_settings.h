@@ -11,6 +11,7 @@ extern "C" {
 // Callsigns, registrations, and ICAO hex identifiers are all accepted.
 #define FLIGHTWALL_MAX_WATCHED 12
 #define FLIGHTWALL_WATCH_ID_SIZE 10
+#define FLIGHTWALL_GITHUB_TOKEN_SIZE 160
 
 typedef struct {
     float latitude;
@@ -23,6 +24,7 @@ typedef struct {
     uint8_t radar_sweep_brightness_percent;
     uint8_t radar_sweep_tail_degrees;
     bool auto_install_updates;
+    char github_token[FLIGHTWALL_GITHUB_TOKEN_SIZE];
     uint8_t watched_count;
     char watched[FLIGHTWALL_MAX_WATCHED][FLIGHTWALL_WATCH_ID_SIZE];
 } flightwall_settings_t;
@@ -46,6 +48,7 @@ bool flightwall_settings_is_watched(const char *id, const char *registration,
                                     const char *hex);
 size_t flightwall_watchlist_format(char *buffer, size_t buffer_size);
 bool flightwall_settings_set_auto_install_updates(bool enabled);
+bool flightwall_settings_set_github_token(const char *token);
 
 #ifdef __cplusplus
 }
