@@ -965,24 +965,33 @@ static bool process_firmware_result(void) {
         return false;
     }
 
-    // If GitHub accepted the request but it produces no firmware bytes and
-    // never completes, abort only that HTTP/TLS connection after 10 seconds.
-    // lwIP's normal error callback then feeds the existing safe retry path.
+    // Cover the entire chunk request lifecycle, including failures that stall
+    // before lwIP creates the TCP/TLS PCB. Only retry a completely empty chunk.
     if (!request.done &&
         current_chunk_started_at_us != 0 &&
         request.decoded_received == current_chunk_decoded_start &&
-        time_us_64() - current_chunk_started_at_us >= 10000000u &&
-        active_update_pcb != NULL) {
-        printf("OTA chunk %lu/%lu stalled empty for 10s; aborting request\n",
+        time_us_64() - current_chunk_started_at_us >= 10000000u) {
+        printf("OTA chunk %lu/%lu stalled empty for 10s; recovering request\n",
                (unsigned long)(current_chunk_index + 1u),
                (unsigned long)pending_manifest.chunk_count);
-        struct altcp_pcb *stalled_pcb = active_update_pcb;
-        active_update_pcb = NULL;
+
         current_chunk_started_at_us = 0;
-        cyw43_arch_lwip_begin();
-        altcp_abort(stalled_pcb);
-        cyw43_arch_lwip_end();
-        return false;
+
+        if (active_update_pcb != NULL) {
+            struct altcp_pcb *stalled_pcb = active_update_pcb;
+            active_update_pcb = NULL;
+            cyw43_arch_lwip_begin();
+            altcp_abort(stalled_pcb);
+            cyw43_arch_lwip_end();
+            return false;
+        }
+
+        // The request stalled before a PCB existed (DNS/early connect path).
+        // Mark it as the same safe zero-byte close used by the normal retry path.
+        request.result = HTTPC_RESULT_ERR_CLOSED;
+        request.http_status = 0;
+        request.done = true;
+        request.failed = false;
     }
 
     // A complete 32 KiB firmware chunk fits in RAM. Wait until GitHub has
