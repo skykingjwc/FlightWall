@@ -16,3 +16,7 @@ If the pack is unavailable, invalid, or does not contain a callsign, FlightWall
 continues using its existing built-in logo.
 
 The generated files should not be edited by hand.
+
+An empty source directory is valid; it produces a zero-icon pack so the download,
+verification, and persistent-storage path can be tested while all displays continue
+to use the built-in logos.
