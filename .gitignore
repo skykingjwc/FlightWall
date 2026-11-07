@@ -43,6 +43,8 @@ secrets.*
 !update/flightwall.uf2
 !update/chunks/
 !update/chunks/*.bin
+!airlines/generated/
+!airlines/generated/pack.bin
 
 # OS/editor files
 .DS_Store
