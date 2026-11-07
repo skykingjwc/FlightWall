@@ -9,6 +9,7 @@
 #include "wifi_provisioning.h"
 #include "ota_server.h"
 #include "update_client.h"
+#include "airline_assets.h"
 #include "flightwall_settings.h"
 
 #include "lwip/ip4_addr.h"
@@ -133,7 +134,8 @@ static const char *ssi_tags[] = {
     "watch",
     "update",
     "autoinst",
-    "ghtoken"
+    "ghtoken",
+    "airline"
 };
 
 static void start_http_server(void) {
@@ -992,6 +994,11 @@ static u16_t ssi_handler(int iIndex, char *pcInsert, int iInsertLen
         case 18: { // GitHub API token
             printed = snprintf(pcInsert, iInsertLen, "%s",
                                flightwall_settings_get()->github_token);
+            break;
+        }
+        case 19: { // airline asset status
+            printed = snprintf(pcInsert, iInsertLen, "%s",
+                               flightwall_airline_assets_status());
             break;
         }
         default: { // unknown tag
