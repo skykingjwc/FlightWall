@@ -139,6 +139,7 @@ textarea {font:inherit; padding:.4em; width:100%; max-width:28em; min-height:5em
     <div class="status">
       <span class="label">Installed</span><span>v<!--#version--></span>
       <span class="label">Update status</span><span id="autoUpdateStatus"><!--#update--></span>
+      <span class="label">Airline icons</span><span><!--#airline--></span>
     </div>
     <p>FlightWall checks its signed update feed through the GitHub API over HTTPS. Firmware authenticity is verified with the embedded ECDSA public key and SHA-256 before installation.</p>
 
