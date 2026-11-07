@@ -121,6 +121,11 @@ static uint64_t next_chunk_start_at_us;
 static size_t current_chunk_decoded_start;
 static uint8_t current_chunk_http_retries;
 static uint64_t current_chunk_started_at_us;
+static bool github_rate_known;
+static uint32_t github_rate_limit;
+static uint32_t github_rate_remaining;
+
+#define GITHUB_API_RETRY_RESERVE 10u
 
 static uint32_t now_ms(void) {
     return to_ms_since_boot(get_absolute_time());
@@ -419,12 +424,66 @@ static void request_finished(void *arg, httpc_result_t result, u32_t rx_content_
     request.done = true;
 }
 
+static bool header_u32(struct pbuf *hdr, u16_t hdr_len, const char *name,
+                       uint32_t *value) {
+    if (!hdr || !name || !value) return false;
+    const size_t name_len = strlen(name);
+
+    for (u16_t pos = 0; pos + name_len + 1u < hdr_len; ++pos) {
+        if (pos != 0 && pbuf_get_at(hdr, (u16_t)(pos - 1u)) != '\n') continue;
+
+        bool match = true;
+        for (size_t i = 0; i < name_len; ++i) {
+            unsigned char actual = (unsigned char)pbuf_get_at(hdr, (u16_t)(pos + i));
+            if (tolower(actual) != tolower((unsigned char)name[i])) {
+                match = false;
+                break;
+            }
+        }
+        if (!match || pbuf_get_at(hdr, (u16_t)(pos + name_len)) != ':') continue;
+
+        u16_t p = (u16_t)(pos + name_len + 1u);
+        while (p < hdr_len) {
+            char c = (char)pbuf_get_at(hdr, p);
+            if (c != ' ' && c != '\t') break;
+            p++;
+        }
+
+        uint32_t parsed = 0;
+        bool have_digit = false;
+        while (p < hdr_len) {
+            char c = (char)pbuf_get_at(hdr, p);
+            if (c < '0' || c > '9') break;
+            have_digit = true;
+            uint32_t digit = (uint32_t)(c - '0');
+            if (parsed > (UINT32_MAX - digit) / 10u) return false;
+            parsed = parsed * 10u + digit;
+            p++;
+        }
+
+        if (!have_digit) return false;
+        *value = parsed;
+        return true;
+    }
+    return false;
+}
+
 static err_t headers_received(httpc_state_t *connection, void *arg, struct pbuf *hdr,
                               u16_t hdr_len, u32_t content_len) {
     (void)connection;
     (void)arg;
-    (void)hdr;
-    (void)hdr_len;
+    uint32_t rate_limit = 0;
+    uint32_t rate_remaining = 0;
+    if (header_u32(hdr, hdr_len, "x-ratelimit-limit", &rate_limit) &&
+        header_u32(hdr, hdr_len, "x-ratelimit-remaining", &rate_remaining)) {
+        github_rate_limit = rate_limit;
+        github_rate_remaining = rate_remaining;
+        github_rate_known = true;
+        printf("GitHub API quota: %lu/%lu remaining\n",
+               (unsigned long)github_rate_remaining,
+               (unsigned long)github_rate_limit);
+    }
+
     request.content_length_known = content_len != 0xffffffffu;
     if (request.kind == REQUEST_SMALL) {
         if (request.content_length_known && content_len > request.capacity) {
@@ -703,6 +762,25 @@ static bool request_ok(void) {
            request.result == HTTPC_RESULT_OK && request.http_status == 200;
 }
 
+static bool github_quota_sufficient(const update_manifest_t *manifest) {
+    if (!github_rate_known || !manifest) return true;
+
+    uint32_t required = manifest->chunk_count + GITHUB_API_RETRY_RESERVE;
+    if (github_rate_remaining >= required) return true;
+
+    printf("GitHub API quota too low: %lu/%lu remaining, need %lu for %lu chunks + %u reserve\n",
+           (unsigned long)github_rate_remaining,
+           (unsigned long)github_rate_limit,
+           (unsigned long)required,
+           (unsigned long)manifest->chunk_count,
+           (unsigned)GITHUB_API_RETRY_RESERVE);
+    snprintf(update_status, sizeof(update_status), "API LOW %lu/%lu NEED %lu",
+             (unsigned long)github_rate_remaining,
+             (unsigned long)github_rate_limit,
+             (unsigned long)required);
+    return false;
+}
+
 static void finish_update_session(void) {
     update_tls_end();
     update_state = UPDATE_STATE_IDLE;
@@ -865,7 +943,19 @@ static bool process_feed_result(void) {
     verified_manifest_available = true;
 
     if (!pending_force_install && !flightwall_settings_get()->auto_install_updates) {
-        snprintf(update_status, sizeof(update_status), "AVAILABLE %s", manifest.version);
+        if (github_rate_known) {
+            snprintf(update_status, sizeof(update_status), "AVAILABLE %s API %lu/%lu",
+                     manifest.version,
+                     (unsigned long)github_rate_remaining,
+                     (unsigned long)github_rate_limit);
+        } else {
+            snprintf(update_status, sizeof(update_status), "AVAILABLE %s", manifest.version);
+        }
+        finish_update_session();
+        return false;
+    }
+
+    if (!github_quota_sufficient(&manifest)) {
         finish_update_session();
         return false;
     }
@@ -1222,6 +1312,12 @@ bool flightwall_update_process_requests(void) {
             }
 
             update_manifest_t manifest = verified_manifest;
+            if (!github_quota_sufficient(&manifest)) {
+                // Keep the cached manifest so the user can check again after
+                // GitHub's hourly quota resets without losing the available update.
+                return false;
+            }
+
             verified_manifest_available = false;
             if (!start_firmware_download(&manifest)) {
                 last_check_succeeded = false;
