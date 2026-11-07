@@ -13,6 +13,7 @@
 #include "mbedtls/ssl.h"
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
+#include "hardware/watchdog.h"
 
 #include "ota_server.h"
 #include "flightwall_settings.h"
@@ -940,6 +941,7 @@ static bool drain_firmware_queue(void) {
 }
 
 static bool process_firmware_result(void) {
+    watchdog_update();
     if (next_chunk_pending) {
         if (time_us_64() < next_chunk_start_at_us) return false;
 
