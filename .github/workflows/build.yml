@@ -8,6 +8,7 @@ on:
       - 'update/flightwall.uf2'
       - 'update/manifest.json'
       - 'update/manifest.sig'
+      - 'airlines/generated/**'
   workflow_dispatch:
 
 concurrency:
