@@ -32,6 +32,7 @@
 #define AIRLINE_PAYLOAD_CAPACITY (52u * 1024u)
 
 #define SMALL_CAPACITY 4096u
+#define REQUEST_TIMEOUT_MS 20000u
 #define FIRST_CHECK_DELAY_MS (90u * 1000u)
 #define CHECK_INTERVAL_MS (24u * 60u * 60u * 1000u)
 #define RETRY_INTERVAL_MS (60u * 60u * 1000u)
@@ -117,6 +118,7 @@ static airline_manifest_t pending_manifest;
 static airline_meta_t current_meta;
 static bool current_valid;
 static uint32_t next_check_ms;
+static uint32_t request_started_ms;
 static char status_text[48] = "BUILT-IN";
 
 enum {
@@ -659,6 +661,7 @@ static bool start_get(const char *path) {
     err_t rc = httpc_get_file_dns(GITHUB_HOST, GITHUB_PORT, path,
                                   &http_connection, receive_body, NULL, NULL);
     cyw43_arch_lwip_end();
+    if (rc == ERR_OK) request_started_ms = now_ms();
     return rc == ERR_OK;
 }
 
@@ -736,6 +739,21 @@ void flightwall_airline_assets_process(void) {
             next_check_ms = now_ms() + RETRY_INTERVAL_MS;
         }
         return;
+    }
+
+    if (!request.done && now_ms() - request_started_ms >= REQUEST_TIMEOUT_MS) {
+        printf("Airline icon request timed out\n");
+        if (active_pcb) {
+            struct altcp_pcb *stalled = active_pcb;
+            active_pcb = NULL;
+            cyw43_arch_lwip_begin();
+            altcp_abort(stalled);
+            cyw43_arch_lwip_end();
+        }
+        request.failed = true;
+        request.done = true;
+        request.result = HTTPC_RESULT_ERR_CLOSED;
+        request.http_status = 0;
     }
 
     if (!request.done) return;
