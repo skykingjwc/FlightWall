@@ -732,14 +732,11 @@ void flightwall_airline_assets_init(void) {
 }
 
 void flightwall_airline_assets_process(void) {
-    if (state == ASSET_IDLE) {
-        if ((int32_t)(now_ms() - next_check_ms) < 0) return;
-        if (!start_manifest_request()) {
-            snprintf(status_text, sizeof(status_text), "CHECK START FAILED");
-            next_check_ms = now_ms() + RETRY_INTERVAL_MS;
-        }
-        return;
-    }
+    // Temporary 1.6.96 stabilization: leave persistent asset loading/rendering
+    // enabled, but do not start a second GitHub TLS client automatically.
+    // 1.6.95 showed runtime lockups correlated with the first asset check.
+    // Existing packs remain readable and built-in logos remain the fallback.
+    if (state == ASSET_IDLE) return;
 
     if (!request.done && now_ms() - request_started_ms >= REQUEST_TIMEOUT_MS) {
         printf("Airline icon request timed out\n");
