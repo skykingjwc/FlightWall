@@ -17,6 +17,7 @@
 #include "hub75.hpp"
 #include "ota_server.h"
 #include "update_client.h"
+#include "airline_assets.h"
 #include "wifi_provisioning.h"
 
 constexpr char APP_NAME[] = "CHATGPT FLIGHTWALL";
@@ -238,13 +239,20 @@ void ota_checkpoint() {
     if (flightwall_aircraft_refresh_active())
         (void)flightwall_aircraft_process();
 
-    // Never start/process a GitHub HTTPS request while the ADS-B HTTPS client
-    // still owns a live request. Queued update requests simply wait for the
-    // aircraft fetch to complete.
-    if (!flightwall_ota_update_ready() && !flightwall_aircraft_refresh_active())
-        (void)flightwall_update_process_requests();
-    if (!flightwall_ota_update_ready() && !flightwall_aircraft_refresh_active())
-        (void)flightwall_update_check_due();
+    // Serialize all HTTPS clients. ADS-B, firmware OTA, and airline assets must
+    // never own live TLS requests at the same time.
+    if (!flightwall_ota_update_ready() && !flightwall_aircraft_refresh_active()) {
+        if (flightwall_airline_assets_network_busy()) {
+            flightwall_airline_assets_process();
+        } else {
+            (void)flightwall_update_process_requests();
+            if (!flightwall_update_network_busy()) {
+                (void)flightwall_update_check_due();
+                if (!flightwall_update_network_busy())
+                    flightwall_airline_assets_process();
+            }
+        }
+    }
     if (!flightwall_ota_update_ready()) return;
     clear();
     centered_text(16, "UPDATE RECEIVED", AMBER);
@@ -260,8 +268,15 @@ void normal_screen_delay() {
     for (uint32_t elapsed = 0; elapsed < duration_ms; elapsed += 100u) {
         if (flightwall_emergency_test_active() || flightwall_load_test_active()) break;
         (void)flightwall_aircraft_process();
-        if (!flightwall_aircraft_refresh_active())
-            (void)flightwall_update_process_requests();
+        if (!flightwall_aircraft_refresh_active()) {
+            if (flightwall_airline_assets_network_busy()) {
+                flightwall_airline_assets_process();
+            } else {
+                (void)flightwall_update_process_requests();
+                if (!flightwall_update_network_busy())
+                    flightwall_airline_assets_process();
+            }
+        }
         if (flightwall_update_installing()) break;
         sleep_ms(std::min<uint32_t>(100, duration_ms - elapsed));
     }
@@ -400,7 +415,27 @@ void draw_frontier_mark(int x, int y) {
 }
 
 bool draw_airline_logo(int x, int y, const char *id) {
-    // All marks are laid out for the same roughly 50x22 pixel identity box.
+    const uint8_t *pixels = nullptr;
+    uint8_t icon_width = 0, icon_height = 0;
+    if (flightwall_airline_assets_get(id, &pixels, &icon_width, &icon_height)) {
+        for (uint8_t py = 0; py < icon_height; ++py) {
+            for (uint8_t px = 0; px < icon_width; ++px) {
+                const uint8_t packed = pixels[(size_t)py * icon_width + px];
+                if (packed == 0) continue;
+                const uint8_t r = (packed >> 5) & 0x07u;
+                const uint8_t g = (packed >> 2) & 0x07u;
+                const uint8_t b = packed & 0x03u;
+                set_pixel(x + px, y + py, Color{
+                    static_cast<uint8_t>((r * 255u) / 7u),
+                    static_cast<uint8_t>((g * 255u) / 7u),
+                    static_cast<uint8_t>((b * 255u) / 3u)
+                });
+            }
+        }
+        return true;
+    }
+
+    // Fall back to the compiled marks when no downloaded icon exists.
     if (callsign_prefix(id, "DAL")) draw_delta_mark(x + 10, y);
     else if (callsign_prefix(id, "UAL")) draw_united_mark(x + 15, y);
     else if (callsign_prefix(id, "AAL")) draw_american_mark(x + 8, y);
@@ -792,6 +827,7 @@ int main() {
     // any preceding GitHub TLS activity.
     flightwall_update_init();
     flightwall_update_set_download_callback(show_update_download);
+    flightwall_airline_assets_init();
 
     flightwall_aircraft_init();
     // ADS-B refresh is asynchronous now. Keep the last complete startup frame
@@ -817,12 +853,14 @@ int main() {
         if (!first_update_check_queued &&
             !flightwall_ota_transfer_active() &&
             !flightwall_aircraft_refresh_active() &&
+            !flightwall_airline_assets_network_busy() &&
             (int32_t)(to_ms_since_boot(get_absolute_time()) - first_update_check_after_ms) >= 0) {
             flightwall_update_request_check();
             first_update_check_queued = true;
         }
         const flightwall_settings_t *current_settings = flightwall_settings_get();
         if (!flightwall_update_network_busy() &&
+            !flightwall_airline_assets_network_busy() &&
             flightwall_aircraft_refresh_due(current_settings->refresh_seconds))
             flightwall_aircraft_refresh();
 
@@ -858,6 +896,7 @@ int main() {
         if (flightwall_emergency_test_active() || flightwall_load_test_active()) continue;
         current_settings = flightwall_settings_get();
         if (!flightwall_update_network_busy() &&
+            !flightwall_airline_assets_network_busy() &&
             flightwall_aircraft_refresh_due(current_settings->refresh_seconds))
             flightwall_aircraft_refresh();
         if (flightwall_aircraft_is_stale(current_settings->refresh_seconds)) continue;
@@ -866,6 +905,7 @@ int main() {
         if (flightwall_emergency_test_active() || flightwall_load_test_active()) continue;
         current_settings = flightwall_settings_get();
         if (!flightwall_update_network_busy() &&
+            !flightwall_airline_assets_network_busy() &&
             flightwall_aircraft_refresh_due(current_settings->refresh_seconds))
             flightwall_aircraft_refresh();
         if (flightwall_aircraft_is_stale(current_settings->refresh_seconds)) continue;
