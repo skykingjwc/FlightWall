@@ -1,0 +1,45 @@
+name: Stage FlightWall Airline Assets
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'airlines/source/**'
+      - 'tools/build_airline_pack.py'
+      - '.github/workflows/stage-airline-assets.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: flightwall-airline-assets
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'Stage airline assets')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Pillow
+        run: python3 -m pip install --disable-pip-version-check pillow
+
+      - name: Build airline pack
+        run: python3 tools/build_airline_pack.py
+
+      - name: Commit generated pack
+        shell: bash
+        run: |
+          git config user.name "FlightWall Airline Asset Stager"
+          git config user.email "actions@users.noreply.github.com"
+          git add -f airlines/generated/pack.bin
+          git add airlines/generated/check.json airlines/generated/pack-info.json
+          if git diff --cached --quiet; then
+            echo "Airline pack already current"
+            exit 0
+          fi
+          git commit -m "Stage airline assets"
+          git push
