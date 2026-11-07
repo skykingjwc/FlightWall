@@ -845,7 +845,7 @@ bool flightwall_airline_assets_get(const char *callsign,
         return false;
     }
 
-    const uint8_t *payload = (const uint8_t *)(XIP_BASE + AIRLINE_PAYLOAD_FLASH_OFFSET);
+    // The pack was already read from storage, validated, and SHA-256 checked at boot.\n    // Render from that RAM copy instead of directly dereferencing storage through XIP;\n    // the latter is unsafe with the RP2350 TBYB/storage address-space mapping.\n    const uint8_t *payload = pack_buffer;
     const airline_pack_header_t *header = (const airline_pack_header_t *)payload;
     if (header->magic != AIRLINE_PACK_MAGIC ||
         header->schema != AIRLINE_SCHEMA ||
