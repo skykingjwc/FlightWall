@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 
-typedef void (*flightwall_update_download_callback_t)(const char *version);
+typedef void (*flightwall_update_download_callback_t)(const char *version, unsigned percent);
 
 void flightwall_update_init(void);
 void flightwall_update_set_download_callback(flightwall_update_download_callback_t callback);

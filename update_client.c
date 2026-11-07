@@ -900,7 +900,7 @@ static bool start_firmware_download(const update_manifest_t *manifest) {
     }
 
     snprintf(update_status, sizeof(update_status), "DOWNLOADING %s", manifest->version);
-    if (download_callback) download_callback(manifest->version);
+    if (download_callback) download_callback(manifest->version, 0u);
     update_state = UPDATE_STATE_FIRMWARE_PENDING;
     return true;
 }
@@ -1183,6 +1183,13 @@ static bool process_firmware_result(void) {
            (unsigned long)pending_manifest.chunk_count,
            (unsigned long)request.decoded_received,
            (unsigned long)request.expected);
+
+    if (download_callback && request.expected > 0) {
+        unsigned percent =
+            (unsigned)((request.flashed_received * 100u) / request.expected);
+        if (percent > 100u) percent = 100u;
+        download_callback(pending_manifest.version, percent);
+    }
 
     if (current_chunk_index + 1u < pending_manifest.chunk_count) {
         current_chunk_index++;

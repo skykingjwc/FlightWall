@@ -210,20 +210,20 @@ extern "C" void show_wifi_status(const char *line1, const char *line2, const cha
     present();
 }
 
-extern "C" void show_update_download(const char *version) {
+extern "C" void show_update_download(const char *version, unsigned percent) {
     clear();
-    centered_text(18, "RECEIVING UPDATE", AMBER);
-    char line[32];
-    std::snprintf(line, sizeof(line), "VERSION %s", version ? version : "");
-    centered_text(31, line, CYAN);
-    centered_text(44, "DO NOT POWER OFF", GREEN);
-    present();
+    centered_text(14, "RECEIVING UPDATE", AMBER);
 
-    // Flash erase/program pauses core 1, which drives the HUB75 refresh.
-    // Leave a stable blank frame on the panels before staging begins so those
-    // lockouts cannot expose a half-refreshed text frame.
-    sleep_ms(700);
-    clear();
+    char version_line[32];
+    std::snprintf(version_line, sizeof(version_line), "VERSION %s", version ? version : "");
+    centered_text(26, version_line, CYAN);
+
+    char progress_line[20];
+    if (percent > 100u) percent = 100u;
+    std::snprintf(progress_line, sizeof(progress_line), "%u%% COMPLETE", percent);
+    centered_text(38, progress_line, WHITE);
+
+    centered_text(50, "DO NOT POWER OFF", GREEN);
     present();
 }
 
